@@ -1,0 +1,265 @@
+//! Query layer over a built `wiring.json`: word search, signature/body slicing
+//! (via the byte spans stored on each node), and a gaps report. Paths in the
+//! graph are relative to the indexed root, so run queries from that same root.
+
+use std::collections::HashSet;
+use std::fs;
+use std::io;
+use std::path::Path;
+
+use serde_json::Value;
+
+/// A node as read back from `wiring.json`.
+struct NodeRec {
+    id: String,
+    name: String,
+    kind: String,
+    path: String,
+    start: usize,
+    end: usize,
+}
+
+/// An edge as read back from `wiring.json`.
+struct EdgeRec {
+    source: String,
+    target: String,
+    relation: String,
+}
+
+/// The loaded graph.
+struct Graph {
+    nodes: Vec<NodeRec>,
+    edges: Vec<EdgeRec>,
+}
+
+fn node_rec(v: &Value) -> Option<NodeRec> {
+    Some(NodeRec {
+        id: v["id"].as_str()?.to_string(),
+        name: v["name"].as_str()?.to_string(),
+        kind: v["kind"].as_str()?.to_string(),
+        path: v["path"].as_str()?.to_string(),
+        start: usize::try_from(v["start"].as_u64().unwrap_or(0)).unwrap_or(0),
+        end: usize::try_from(v["end"].as_u64().unwrap_or(0)).unwrap_or(0),
+    })
+}
+
+fn edge_rec(v: &Value) -> Option<EdgeRec> {
+    Some(EdgeRec {
+        source: v["source"].as_str()?.to_string(),
+        target: v["target"].as_str()?.to_string(),
+        relation: v["relation"].as_str()?.to_string(),
+    })
+}
+
+fn load(out: &str) -> Result<Graph, io::Error> {
+    let path = format!("{out}/.graph/wiring.json");
+    let text = fs::read_to_string(&path)?;
+    let v: Value = serde_json::from_str(&text).map_err(io::Error::other)?;
+    let nodes = v["nodes"].as_array().map(|a| a.iter().filter_map(node_rec).collect()).unwrap_or_default();
+    let edges = v["edges"].as_array().map(|a| a.iter().filter_map(edge_rec).collect()).unwrap_or_default();
+    Ok(Graph { nodes, edges })
+}
+
+/// Resolve a symbol string to one node: exact id, else a unique `#name` /
+/// `.name` / bare-name match. Ambiguous or missing is an error.
+fn resolve<'a>(graph: &'a Graph, symbol: &str) -> Result<&'a NodeRec, io::Error> {
+    if let Some(n) = graph.nodes.iter().find(|n| n.id == symbol) {
+        return Ok(n);
+    }
+    let hash = format!("#{symbol}");
+    let dot = format!(".{symbol}");
+    let matches: Vec<&NodeRec> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind != "file")
+        .filter(|n| n.name == symbol || n.id.ends_with(&hash) || n.id.ends_with(&dot))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => Err(io::Error::new(io::ErrorKind::NotFound, format!("no symbol matches '{symbol}'"))),
+        many => {
+            let list = many.iter().map(|n| n.id.as_str()).collect::<Vec<_>>().join("\n  ");
+            Err(io::Error::new(io::ErrorKind::InvalidInput, format!("ambiguous '{symbol}':\n  {list}")))
+        }
+    }
+}
+
+/// The source text a node spans (the whole file for `file` nodes; the extracted
+/// `<script>` for `.vue`, matching how spans were recorded).
+fn source_slice(node: &NodeRec) -> Result<String, io::Error> {
+    let code = fs::read_to_string(&node.path)?;
+    if node.kind == "file" {
+        return Ok(code);
+    }
+    let is_vue = Path::new(&node.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("vue"));
+    let text = if is_vue { crate::js::vue_script(&code) } else { code };
+    let bytes = text.as_bytes();
+    let start = node.start.min(bytes.len());
+    let end = node.end.max(node.start).min(bytes.len());
+    Ok(String::from_utf8_lossy(&bytes[start..end]).into_owned())
+}
+
+/// List symbols whose id or name contains `term` (case-insensitive).
+pub fn find(out: &str, term: &str) -> Result<(), io::Error> {
+    let graph = load(out)?;
+    let needle = term.to_lowercase();
+    let mut hits: Vec<&NodeRec> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind != "file")
+        .filter(|n| n.id.to_lowercase().contains(&needle) || n.name.to_lowercase().contains(&needle))
+        .collect();
+    hits.sort_by(|a, b| a.id.cmp(&b.id));
+    for n in hits {
+        println!("{}\t{}", n.kind, n.id);
+    }
+    Ok(())
+}
+
+/// Print a symbol's declaration line (source up to its opening `{` or `;`).
+pub fn signature(out: &str, symbol: &str) -> Result<(), io::Error> {
+    let graph = load(out)?;
+    let node = resolve(&graph, symbol)?;
+    // Whole-unit kinds have no declaration line to slice; name them instead.
+    if matches!(node.kind.as_str(), "component" | "file") {
+        println!("{} {}", node.kind, node.name);
+        return Ok(());
+    }
+    let body = source_slice(node)?;
+    let cut = body.find('{').or_else(|| body.find(';')).unwrap_or(body.len());
+    println!("{}", body[..cut].trim());
+    Ok(())
+}
+
+/// Print a symbol's full source body.
+pub fn body(out: &str, symbol: &str) -> Result<(), io::Error> {
+    let graph = load(out)?;
+    let node = resolve(&graph, symbol)?;
+    println!("{}", source_slice(node)?);
+    Ok(())
+}
+
+/// List what references a symbol: every `calls`/`imports`/`extends`/`implements`
+/// edge that targets it, as `relation<TAB>source` (the blast radius).
+pub fn callers(out: &str, symbol: &str) -> Result<(), io::Error> {
+    let graph = load(out)?;
+    let node = resolve(&graph, symbol)?;
+    let mut hits: Vec<String> = graph
+        .edges
+        .iter()
+        .filter(|e| e.target == node.id)
+        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements"))
+        .map(|e| format!("{}\t{}", e.relation, e.source))
+        .collect();
+    hits.sort();
+    hits.dedup();
+    for h in hits {
+        println!("{h}");
+    }
+    Ok(())
+}
+
+/// Report graph gaps: symbols nothing references, edges that never resolved to a
+/// node, and files that parsed to nothing.
+pub fn missing(out: &str) -> Result<(), io::Error> {
+    let graph = load(out)?;
+    let ids: HashSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let mut referenced: HashSet<&str> = HashSet::new();
+    for e in &graph.edges {
+        if e.relation != "contains" && ids.contains(e.target.as_str()) {
+            referenced.insert(e.target.as_str());
+        }
+    }
+
+    let unreferenced: Vec<&NodeRec> = graph
+        .nodes
+        .iter()
+        .filter(|n| !matches!(n.kind.as_str(), "file" | "component"))
+        .filter(|n| !referenced.contains(n.id.as_str()))
+        .collect();
+
+    let mut unresolved: Vec<&EdgeRec> = graph
+        .edges
+        .iter()
+        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements"))
+        .filter(|e| !ids.contains(e.target.as_str()))
+        .collect();
+    unresolved.sort_by(|a, b| a.target.cmp(&b.target));
+
+    let has_children: HashSet<&str> =
+        graph.edges.iter().filter(|e| e.relation == "contains").map(|e| e.source.as_str()).collect();
+    let empty_files: Vec<&NodeRec> =
+        graph.nodes.iter().filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str())).collect();
+
+    report("unreferenced symbols (never called/imported/extended)", unreferenced.iter().map(|n| n.id.clone()));
+    report("unresolved edges (target not in graph)", unresolved.iter().map(|e| format!("{} -> {} ({})", e.source, e.target, e.relation)));
+    report("empty files (parsed to nothing)", empty_files.iter().map(|n| n.id.clone()));
+    Ok(())
+}
+
+/// Print a titled count plus a capped sample of the items.
+fn report(title: &str, items: impl Iterator<Item = String>) {
+    const SAMPLE: usize = 20;
+    let all: Vec<String> = items.collect();
+    println!("{}: {}", title, all.len());
+    for line in all.iter().take(SAMPLE) {
+        println!("  {line}");
+    }
+    if all.len() > SAMPLE {
+        println!("  ... and {} more", all.len() - SAMPLE);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::{resolve, source_slice, Graph, NodeRec};
+
+    fn node(id: &str, name: &str, kind: &str, path: &str, start: usize, end: usize) -> NodeRec {
+        NodeRec {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            path: path.to_string(),
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn resolves_exact_bare_ambiguous_and_missing() {
+        let graph = Graph {
+            nodes: vec![
+                node("a.php#Foo", "Foo", "class", "a.php", 0, 0),
+                node("a.php#Foo.bar", "bar", "method", "a.php", 0, 0),
+                node("b.php#Foo.bar", "bar", "method", "b.php", 0, 0),
+            ],
+            edges: vec![],
+        };
+        assert_eq!(resolve(&graph, "a.php#Foo.bar").unwrap().id, "a.php#Foo.bar");
+        assert_eq!(resolve(&graph, "Foo").unwrap().id, "a.php#Foo");
+        assert!(resolve(&graph, "bar").is_err()); // ambiguous
+        assert!(resolve(&graph, "nope").is_err()); // missing
+    }
+
+    #[test]
+    fn slices_a_symbol_span_from_source() {
+        let path = std::env::temp_dir().join("plouf_query_span.php");
+        std::fs::write(&path, "<?php function foo(): int { return 1; }").unwrap();
+        let p = path.to_str().unwrap();
+        let n = node("x#foo", "foo", "function", p, 6, 100);
+        assert!(source_slice(&n).unwrap().starts_with("function foo"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn file_kind_slice_returns_whole_file() {
+        let path = std::env::temp_dir().join("plouf_query_whole.php");
+        std::fs::write(&path, "<?php // whole-file-body").unwrap();
+        let p = path.to_str().unwrap();
+        let n = node(p, "plouf_query_whole.php", "file", p, 0, 0);
+        assert!(source_slice(&n).unwrap().contains("whole-file-body"));
+        std::fs::remove_file(&path).ok();
+    }
+}

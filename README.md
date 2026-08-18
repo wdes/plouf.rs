@@ -1,0 +1,75 @@
+# plouf.rs
+
+A fast, deterministic code-graph for a polyglot repository, written in Rust. It
+walks the source tree, emits a `wiring.json` (nodes + resolved edges), and
+answers queries over it -- so tools and agents navigate a codebase instead of
+grepping it.
+
+- **PHP** via [Mago](https://github.com/carthage-software/mago)
+- **JS / TS / Vue** via [oxc](https://oxc.rs) (`.vue` = its `<script>` blocks)
+
+One graph spans backend and frontend.
+
+## Build
+
+```sh
+cargo build --release
+```
+
+Needs a recent Rust toolchain (Mago requires rustc >= 1.97).
+
+## Index
+
+```sh
+cargo run --release -- index . --out build/out
+```
+
+Writes `build/out/.graph/wiring.json` plus a tiny `stats.json`. Extraction is
+parallel; `PLOUF_THREADS=1` forces sequential for the lowest peak RSS, higher
+values trade memory for speed.
+
+## Query
+
+Run these from the directory you indexed (paths in the graph are relative):
+
+```sh
+cargo run --release -- find CompanyController   # symbols whose id/name matches
+cargo run --release -- sig Company.getId        # a symbol's declaration line
+cargo run --release -- body Foo.convert         # full source (fn/class/enum/...)
+cargo run --release -- callers BaseRequest      # who references it (blast radius)
+cargo run --release -- missing                  # gaps: unreferenced/unresolved/empty
+```
+
+A bare name resolves when unique; otherwise the candidates are listed. `--out`
+defaults to `build/plouf-rs-out`; pass the directory you indexed into.
+
+## DB schema (optional)
+
+`plouf` reads a JSON any tool can produce -- `{tables: [{name, columns}],
+foreignKeys: [...]}` -- so a project can feed its live schema in:
+
+```sh
+cargo run --release -- tables --schema schema.json
+cargo run --release -- table companies --schema schema.json
+```
+
+## Model
+
+- **Nodes**: `file`, `class`, `interface`, `trait`, `enum`, `function`,
+  `method`, `component` (one per Vue SFC). Ids are `path` for files and
+  `path#Symbol` / `path#Class.method` for the rest, each carrying a byte span
+  so `sig` / `body` slice the source without re-parsing.
+- **Edges**: `contains`, `imports` (JS relative specifiers resolve to files),
+  `extends` / `implements`, `calls` (resolved via a typed receiver -- `$this` /
+  `this`, typed params, `new X()` / annotated locals -- then the extends chain,
+  else a unique-name fallback).
+
+## Tests
+
+```sh
+cargo test
+```
+
+## License
+
+[MPL-2.0](LICENSE).

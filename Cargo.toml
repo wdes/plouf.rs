@@ -1,0 +1,51 @@
+[package]
+name = "plouf-rs"
+version = "0.1.0"
+edition = "2021"
+description = "A deterministic code-graph for a polyglot repo (PHP via Mago, JS/TS/Vue via oxc): index it, then query symbols, signatures, bodies, callers, and gaps."
+license = "MPL-2.0"
+authors = ["William Desportes <williamdes@wdes.fr>"]
+repository = "https://github.com/wdes/plouf.rs"
+
+[[bin]]
+name = "plouf-rs"
+path = "src/main.rs"
+
+[package.metadata.deb]
+maintainer = "William Desportes <williamdes@wdes.fr>"
+section = "devel"
+priority = "optional"
+
+# plouf.rs -- a Rust code-graph, using Mago (carthage-software/mago) for the
+# PHP parse side and oxc for JS/TS/Vue. Emits a `wiring.json` graph. Build
+# artifacts land under build/ (gitignored).
+[dependencies]
+mago-syntax = { git = "https://github.com/carthage-software/mago" }
+mago-database = { git = "https://github.com/carthage-software/mago" }
+mago-allocator = { git = "https://github.com/carthage-software/mago" }
+mago-span = { git = "https://github.com/carthage-software/mago" }
+serde_json = "1"
+clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+ignore = "0.4"
+rayon = "1"
+oxc = { version = "0.145.0", features = ["ast_visit"] }
+
+# Lint policy copied from tab-atelier: deny broadly, and no panics in
+# production (no unwrap/expect). A few pedantic/nursery lints that fight a
+# small CLI are relaxed rather than littered with per-site allows.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+# Mago's TokenSeparatedSequence exposes `.iter()`, not `&seq` iteration.
+explicit_iter_loop = "allow"

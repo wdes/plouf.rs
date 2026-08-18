@@ -1,0 +1,37 @@
+name: Build
+
+# push is main-only so PR commits don't run twice (once per event).
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+# main is never cancelled; PR runs supersede their own older commits.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: Build & test & lint
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Install Rust toolchain
+              # Latest stable satisfies Mago's rustc >= 1.97 requirement.
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy
+            - name: Cache cargo artifacts
+              uses: Swatinem/rust-cache@v2
+              with:
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Build
+              run: cargo build --locked --all-targets
+            - name: Test
+              run: cargo test --locked --all-targets --no-fail-fast
+            - name: Clippy
+              run: cargo clippy --all-targets --locked -- -D warnings
