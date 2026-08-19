@@ -310,4 +310,22 @@ mod tests {
         let (nodes, edges) = scan("a.ts", "export const x = { path: 'nope' };");
         assert!(nodes.is_empty() && edges.is_empty()); // has path: but no component/loadChildren
     }
+
+    #[test]
+    fn covers_router_edge_cases() {
+        // empty path -> '/', a non-relative (`@/`) import kept raw, `import type`
+        // skipped, and a relative loadChildren joined.
+        let code = "import type { T } from './t';\nconst routes = [\n  { path: '', component: () => import('@/pages/Root') },\n  { path: 'x', loadChildren: () => import('./x.module') },\n];";
+        let (nodes, edges) = scan("src/app.routes.ts", code);
+        assert!(nodes.iter().any(|n| n.kind == "route" && n.name == "/")); // '' -> root
+        assert!(edges.iter().any(|e| e.name.as_deref() == Some("@/pages/Root"))); // non-relative kept raw
+        assert!(edges.iter().any(|e| e.name.as_deref() == Some("src/x.module"))); // relative joined
+    }
+
+    #[test]
+    fn unbalanced_brace_does_not_panic() {
+        // Passes the gate (path: + component) but the object never closes.
+        let (nodes, _) = scan("r.ts", "const routes = [ { path: '/a', component: A ");
+        assert!(nodes.is_empty());
+    }
 }

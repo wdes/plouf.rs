@@ -114,6 +114,14 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_scenario_names_get_distinct_ids() {
+        let (nodes, _) = extract("x.bbscript", "x.bbscript", "Scenario: same\n  open /a\nScenario: same\n  open /b\n");
+        let ids: Vec<&str> = nodes.iter().filter(|n| n.kind == "scenario").map(|n| n.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]); // the second `same` is minted with a ~2 suffix
+    }
+
+    #[test]
     fn steps_without_a_route_are_ignored() {
         let code = "Scenario: nothing navigational\n  storage remove mounch.user\n  see role:heading[name=\"Clients\"]\n";
         let (nodes, edges) = extract("x.bbscript", "x.bbscript", code);

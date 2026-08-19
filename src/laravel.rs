@@ -243,6 +243,17 @@ mod tests {
     }
 
     #[test]
+    fn scan_tables_boundary_and_no_paren() {
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<RawEdge> = Vec::new();
+        // `myDB::table` is a longer name (preceding ident char) -> ignored;
+        // `Schema::create` with no `(` after -> ignored.
+        super::scan_tables("f.php", "<?php myDB::table('x'); Schema::create ; DB::table  ('spaced');", &mut nodes, &mut edges);
+        assert!(!edges.iter().any(|e| e.name.as_deref() == Some("x")));
+        assert!(edges.iter().any(|e| e.relation == "uses-table" && e.name.as_deref() == Some("spaced")));
+    }
+
+    #[test]
     fn scan_tables_migrations_and_query_builder() {
         let code = "<?php\nSchema::create('companies', function ($t) { $t->string('name'); });\nDB::table('users')->where('id', 1);";
         let mut nodes: Vec<Node> = Vec::new();
