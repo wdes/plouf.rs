@@ -22,7 +22,7 @@ Download the `.deb` from the releases and install it:
 ```bash
 curl -fsSL -o /tmp/plouf-rs.deb \
   https://github.com/wdes/plouf.rs/releases/download/v0.1.0/plouf-rs_0.1.0-1_amd64.deb
-sudo dpkg -i /tmp/plouf-rs.deb
+sudo apt install /tmp/plouf-rs.deb
 ```
 
 This installs the binary to `/usr/bin/plouf-rs` (on your `PATH`) and drops this

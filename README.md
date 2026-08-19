@@ -10,7 +10,25 @@ grepping it.
 
 One graph spans backend and frontend.
 
+## Install
+
+Download the `.deb` from the [releases](https://github.com/wdes/plouf.rs/releases)
+and install it with apt (resolves dependencies and puts `plouf-rs` on your
+`PATH` at `/usr/bin/plouf-rs`):
+
+```sh
+curl -fsSL -o /tmp/plouf-rs.deb \
+  https://github.com/wdes/plouf.rs/releases/download/v0.1.0/plouf-rs_0.1.0-1_amd64.deb
+sudo apt install /tmp/plouf-rs.deb
+```
+
+The package also drops the `/plouf` agent skill under
+`/usr/share/doc/plouf-rs/skill/` -- copy it into a project's `.claude/skills/`
+to use it.
+
 ## Build
+
+Or build from source:
 
 ```sh
 cargo build --release
