@@ -227,8 +227,16 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
 
     let has_children: HashSet<&str> =
         graph.edges.iter().filter(|e| e.relation == "contains").map(|e| e.source.as_str()).collect();
-    let empty_files: Vec<&NodeRec> =
-        graph.nodes.iter().filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str())).collect();
+    let empty_files: Vec<&NodeRec> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str()))
+        // Template files (HTML / Blade) legitimately hold no code symbols -- not a gap.
+        .filter(|n| {
+            !Path::new(&n.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("html"))
+                && !n.path.ends_with(".blade.php")
+        })
+        .collect();
 
     report("unreferenced symbols (never called/imported/extended)", unreferenced.iter().map(|n| n.id.clone()));
     report("unresolved edges (target not in graph)", unresolved.iter().map(|e| format!("{} -> {} ({})", e.source, e.target, e.relation)));

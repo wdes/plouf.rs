@@ -104,18 +104,48 @@ fn name_from_call(c: &CallExpression) -> Option<String> {
 
 /// The value of a `name: "..."` string property in an object literal.
 fn name_property(o: &ObjectExpression) -> Option<String> {
+    string_property(o, "name")
+}
+
+/// The value of a `<key>: "..."` string property in an object literal.
+fn string_property(o: &ObjectExpression, key: &str) -> Option<String> {
     o.properties.iter().find_map(|p| {
         let ObjectPropertyKind::ObjectProperty(prop) = p else {
             return None;
         };
-        let PropertyKey::StaticIdentifier(key) = &prop.key else {
+        let PropertyKey::StaticIdentifier(k) = &prop.key else {
             return None;
         };
-        if key.name.as_str() != "name" {
+        if k.name.as_str() != key {
             return None;
         }
         match peel(&prop.value) {
             Expression::StringLiteral(s) => Some(s.value.as_str().to_string()),
+            _ => None,
+        }
+    })
+}
+
+/// The name a class decorator applies, e.g. `@Component({...})` -> `Component`,
+/// `@Injectable()` -> `Injectable`.
+fn decorator_name(e: &Expression) -> Option<String> {
+    match peel(e) {
+        Expression::CallExpression(c) => callee_name(&c.callee),
+        other => callee_name(other),
+    }
+}
+
+/// The `selector: '...'` of an Angular `@Component({...})` decorator, if present.
+fn component_selector(c: &Class) -> Option<String> {
+    c.decorators.iter().find_map(|d| {
+        let Expression::CallExpression(call) = peel(&d.expression) else {
+            return None;
+        };
+        if callee_name(&call.callee).as_deref() != Some("Component") {
+            return None;
+        }
+        match call.arguments.first() {
+            Some(Argument::ObjectExpression(o)) => string_property(o, "selector"),
             _ => None,
         }
     })
@@ -198,8 +228,21 @@ impl JsExt {
         };
         let name = id_node.name.as_str().to_string();
         let id = format!("{}#{}", self.rel, name);
-        self.mint(&id, &name, "class", c.span.start, c.span.end);
+        // Angular: a class decorated with `@Component({...})` is a component, not
+        // a plain class. Emit it as `component` and, when the decorator carries a
+        // `selector: '...'`, an extra `component` node named by the selector so
+        // `find app-foo` locates it too.
+        let is_component = c.decorators.iter().any(|d| decorator_name(&d.expression).as_deref() == Some("Component"));
+        let kind = if is_component { "component" } else { "class" };
+        self.mint(&id, &name, kind, c.span.start, c.span.end);
         self.contains(&id);
+        if is_component {
+            if let Some(selector) = component_selector(c) {
+                let sel_id = format!("{}#{}", self.rel, selector);
+                self.mint(&sel_id, &selector, "component", c.span.start, c.span.end);
+                self.contains(&sel_id);
+            }
+        }
         if let Some(heritage) = &c.heritage {
             if let Some(sup) = callee_name(&heritage.expression) {
                 self.edges.push(RawEdge::named(id.clone(), "extends", sup));
@@ -455,6 +498,18 @@ mod tests {
         assert!(edges.iter().any(|e| e.relation == "extends" && e.name.as_deref() == Some("Base")));
         assert!(edges.iter().any(|e| e.relation == "implements" && e.name.as_deref() == Some("Greeter")));
         assert!(has_call(&edges, "render", Some("Widget")));
+    }
+
+    #[test]
+    fn detects_angular_component_and_selector() {
+        let code = "@Component({ selector: 'app-foo', templateUrl: './foo.html' })\nexport class FooComponent { ngOnInit(): void {} }";
+        let (nodes, _) = extract("src/app/foo.component.ts", "foo.component.ts", code, SourceType::ts());
+        assert!(nodes.iter().any(|n| n.kind == "component" && n.name == "FooComponent"));
+        assert!(nodes.iter().any(|n| n.kind == "component" && n.name == "app-foo"));
+        assert!(names(&nodes, "method").contains(&"ngOnInit"));
+        // A plain class stays a class.
+        let (plain, _) = extract("b.ts", "b.ts", "export class Bar {}", SourceType::ts());
+        assert!(names(&plain, "class").contains(&"Bar"));
     }
 
     #[test]

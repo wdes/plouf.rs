@@ -28,7 +28,12 @@ const FNS: &[(&str, usize)] = &[
     ("$t", 0),
     ("$tc", 0),
     ("$te", 0),
+    ("instant", 0), // Angular ngx-translate: `TranslateService.instant('KEY')`
 ];
+
+/// Pipe names whose left operand is a translation key: Angular ngx-translate's
+/// `'KEY' | translate` and transloco's `'KEY' | transloco`.
+const PIPES: &[&str] = &["translate", "transloco"];
 
 /// Identifier byte: ASCII alphanumeric, `_`, or `$` (so `$t` and `__` read as
 /// single tokens and word boundaries are exact).
@@ -90,12 +95,21 @@ fn key_arg(bytes: &[u8], after_paren: usize, index: usize) -> Option<String> {
     }
 }
 
-/// Scan `code` for translation-key calls, emitting a `uses-lang` edge from
-/// `source_id` (the file id) per captured key. Whole-identifier-token matching
-/// keeps `__` from firing on `__construct` and `trans` on `trans_choice`.
+/// Scan `code` for translation-key usages, emitting a `uses-lang` edge from
+/// `source_id` (the file id) per captured key. Two forms: the call syntax
+/// `name('KEY', ...)` and the Angular template pipe `'KEY' | translate`.
 pub fn scan(source_id: &str, code: &str) -> Vec<RawEdge> {
-    let bytes = code.as_bytes();
     let mut out = Vec::new();
+    scan_calls(source_id, code, &mut out);
+    scan_pipe(source_id, code, &mut out);
+    out
+}
+
+/// Call form: `name('KEY', ...)` for the `FNS` set. Whole-identifier-token
+/// matching keeps `__` from firing on `__construct` and `trans` on
+/// `trans_choice`.
+fn scan_calls(source_id: &str, code: &str, out: &mut Vec<RawEdge>) {
+    let bytes = code.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if !is_ident(bytes[i]) || (i > 0 && is_ident(bytes[i - 1])) {
@@ -118,7 +132,43 @@ pub fn scan(source_id: &str, code: &str) -> Vec<RawEdge> {
             out.push(RawEdge::named(source_id.to_string(), "uses-lang", key));
         }
     }
-    out
+}
+
+/// Pipe form: a string literal followed by `| translate` / `| transloco`
+/// (Angular ngx-translate / transloco templates). Captures the string as the
+/// key; a `||` (logical or) is skipped.
+fn scan_pipe(source_id: &str, code: &str, out: &mut Vec<RawEdge>) {
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\'' && bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        let Some((key, next)) = read_string(bytes, i) else {
+            i += 1;
+            continue;
+        };
+        // HTML attribute binding `[x]="'KEY' | translate"` nests the single-quoted
+        // key inside a double-quoted string; scan the contents too so it is caught.
+        if next > i + 2 {
+            scan_pipe(source_id, &code[i + 1..next - 1], out);
+        }
+        i = next;
+        let j = skip_ws(bytes, next);
+        if bytes.get(j) != Some(&b'|') || bytes.get(j + 1) == Some(&b'|') {
+            continue;
+        }
+        let start = skip_ws(bytes, j + 1);
+        let mut e = start;
+        while e < bytes.len() && is_ident(bytes[e]) {
+            e += 1;
+        }
+        let pipe = &code[start..e];
+        if PIPES.contains(&pipe) {
+            out.push(RawEdge::named(source_id.to_string(), "uses-lang", key));
+        }
+    }
 }
 
 /// Stream the translation-key index to `w` as a JSON object
@@ -194,6 +244,22 @@ mod tests {
         let k = keys(code);
         assert!(k.contains(&"a.b".to_string()));
         assert!(k.contains(&"it's".to_string()));
+    }
+
+    #[test]
+    fn captures_angular_ngx_translate_forms() {
+        // TS service call + HTML pipe (both interpolation and binding).
+        let code = "this.translate.instant('nav.home'); tpl = `{{ 'nav.away' | translate }} [x]=\"'form.ok' | translate\"`;";
+        let k = keys(code);
+        assert!(k.contains(&"nav.home".to_string())); // .instant('KEY')
+        assert!(k.contains(&"nav.away".to_string())); // 'KEY' | translate (interpolation)
+        assert!(k.contains(&"form.ok".to_string())); // 'KEY' | translate (binding)
+    }
+
+    #[test]
+    fn pipe_ignores_logical_or_and_other_pipes() {
+        let code = "a = 'x' || 'y'; b = 'z' | uppercase;";
+        assert!(keys(code).is_empty());
     }
 
     #[test]

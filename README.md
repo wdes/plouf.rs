@@ -6,10 +6,13 @@ answers queries over it -- so tools and agents navigate a codebase instead of
 grepping it.
 
 - **PHP** via [Mago](https://github.com/carthage-software/mago)
-- **JS / TS / Vue** via [oxc](https://oxc.rs) (`.vue` = its `<script>` blocks)
+- **JS / TS / Vue / Angular** via [oxc](https://oxc.rs) (`.vue` = its `<script>`
+  blocks; Angular `@Component` classes become `component` nodes + their selector)
 - **Blade** templates (`*.blade.php`) via a hand-scanner: view references
   (`@include`/`@extends`/`@component`/`<x-...>`) and translation keys
-- **Translation keys** across all of the above, indexed to a `lang.json` sidecar
+- **Translation keys** across all of the above (Laravel `__`/`trans`, Vue
+  `$t`/`t`, Angular ngx-translate `.instant(...)` + the `| translate` pipe in
+  `.html` templates, gettext), indexed to a `lang.json` sidecar
 
 One graph spans backend and frontend.
 

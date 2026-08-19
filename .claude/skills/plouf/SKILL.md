@@ -45,9 +45,10 @@ plouf-rs missing                         # gaps: unreferenced, unresolved, empty
 ```
 
 `uses` takes an exact translation key (Laravel `__`/`trans`/`trans_choice`, Vue
-`$t`/`t`, gettext) or, failing that, a case-insensitive substring -- handy for
-finding every surface that references a key, including Blade templates and
-`.vue` `<template>` `$t(...)`.
+`$t`/`t`, Angular ngx-translate `.instant(...)` + the `| translate` pipe, gettext)
+or, failing that, a case-insensitive substring -- handy for finding every surface
+that references a key, including Blade templates, `.vue` `<template>` `$t(...)`,
+and Angular `.html` templates.
 
 A bare name works when unique; otherwise the candidates are listed -- copy a full
 id (`path#Class.method`) to disambiguate.

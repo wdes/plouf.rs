@@ -85,8 +85,8 @@ use crate::extract::{Ctx, Ext};
 use crate::model::{Node, RawEdge};
 
 /// Source extensions we extract: PHP (via Mago) plus JS/TS/Vue (via oxc).
-const SOURCE_EXTS: [&str; 10] =
-    ["php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue"];
+const SOURCE_EXTS: [&str; 11] =
+    ["php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html"];
 
 /// Collect source files under `root`, honouring `.gitignore` (and parent
 /// gitignores) via the `ignore` crate -- gitignore-aware.
@@ -124,11 +124,20 @@ fn extract_file(root: &Path, file_path: &Path) -> (Vec<Node>, Vec<RawEdge>) {
     match ext {
         "php" => extract_php(&rel, &base, &code),
         "vue" => js::extract_vue(&rel, &base, &code),
+        "html" => extract_html(&rel, &base, &code),
         _ => {
             let source_type = SourceType::from_path(file_path).unwrap_or_else(|_| SourceType::tsx());
             js::extract(&rel, &base, &code, source_type)
         }
     }
+}
+
+/// Extract an HTML file (e.g. an Angular external template): a single `file`
+/// node plus translation-key usages (the `| translate` pipe). HTML holds no code
+/// symbols, so nothing else is emitted.
+fn extract_html(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+    let node = Node { id: rel.to_string(), name: base.to_string(), kind: "file", path: rel.to_string(), start: 0, end: 0 };
+    (vec![node], lang::scan(rel, code))
 }
 
 /// Parse one PHP file with Mago and return its nodes + raw edges.
