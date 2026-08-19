@@ -144,7 +144,15 @@ pub fn body(out: &str, symbol: &str) -> Result<(), io::Error> {
 fn is_reference(relation: &str) -> bool {
     matches!(
         relation,
-        "calls" | "imports" | "extends" | "implements" | "includes" | "table" | "migrates" | "uses-table"
+        "calls"
+            | "imports"
+            | "extends"
+            | "implements"
+            | "includes"
+            | "covers"
+            | "table"
+            | "migrates"
+            | "uses-table"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 

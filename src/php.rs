@@ -49,6 +49,7 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // Laravel table references (`Schema::create('x')`, `DB::table('x')`), scanned
     // from the raw source; join to model `table` edges via the shared `table:` node.
     crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
+    scan_covers(rel, code, &mut edges);
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
 }
@@ -121,6 +122,43 @@ fn span(src: &str, start: u32, end: u32) -> &str {
     let s = (start as usize).min(src.len());
     let e = (end as usize).max(s).min(src.len());
     src.get(s..e).unwrap_or("")
+}
+
+/// Scan `PHPUnit` coverage declarations and emit a `covers` edge from the test
+/// file to each covered class/function (resolved by unique name). Both the
+/// modern attributes (`#[CoversClass(X::class)]`, `#[CoversFunction('fn')]`,
+/// `#[CoversMethod(X::class, 'm')]`) and legacy docblocks (`@covers X`,
+/// `@coversDefaultClass X`) are recognised -- so `callers X` lists its tests.
+fn scan_covers(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
+    for tag in ["#[CoversClass", "#[CoversFunction", "#[CoversMethod"] {
+        let mut from = 0;
+        while let Some(pos) = code[from..].find(tag) {
+            let at = from + pos;
+            from = at + tag.len();
+            let window = &code[at..code.len().min(at + 256)];
+            if let Some(end) = window.find(')') {
+                if let Some(target) = crate::laravel::related_model(&window[..end]) {
+                    edges.push(RawEdge::named(rel.to_string(), "covers", target));
+                }
+            }
+        }
+    }
+    for tag in ["@covers ", "@coversDefaultClass "] {
+        let mut from = 0;
+        while let Some(pos) = code[from..].find(tag) {
+            let at = from + pos + tag.len();
+            from = at;
+            let token: String = code[at..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '\\' || *c == ':')
+                .collect();
+            let class = token.split("::").next().unwrap_or(&token);
+            let name = dequalify(class.trim_start_matches('\\'));
+            if !name.is_empty() {
+                edges.push(RawEdge::named(rel.to_string(), "covers", name));
+            }
+        }
+    }
 }
 
 // --- the walk --------------------------------------------------------------
@@ -521,5 +559,14 @@ mod tests {
         assert!(nodes.iter().any(|n| n.kind == "table" && n.name == "companies"));
         // The column name 'name' must NOT be mistaken for a table.
         assert!(!has_named(&edges, "migrates", "name"));
+    }
+
+    #[test]
+    fn links_phpunit_covers_to_targets() {
+        let code = "<?php\n#[CoversClass(Invoice::class)]\n#[CoversFunction('array_flatten')]\n/**\n * @coversDefaultClass \\App\\Services\\Billing\n */\nclass InvoiceTest extends TestCase {}";
+        let (_, edges) = extract("tests/Feature/InvoiceTest.php", code);
+        assert!(has_named(&edges, "covers", "Invoice")); // CoversClass(X::class)
+        assert!(has_named(&edges, "covers", "array_flatten")); // CoversFunction('fn')
+        assert!(has_named(&edges, "covers", "Billing")); // @coversDefaultClass (de-qualified)
     }
 }

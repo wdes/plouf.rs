@@ -94,8 +94,9 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
                 let last = name.rsplit('\\').next().unwrap_or(name);
                 Some(Index::unique(&idx.path_by_name, last).map_or_else(|| name.to_string(), str::to_string))
             }
-            // Heritage + Eloquent relations resolve to a class node by unique name.
-            "extends" | "implements" => {
+            // Heritage, PHPUnit covers, + Eloquent relations resolve to a
+            // class/function node by unique name.
+            "extends" | "implements" | "covers" => {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }
             rel if crate::laravel::relation_kind(rel).is_some() => {
