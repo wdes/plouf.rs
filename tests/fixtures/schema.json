@@ -1,0 +1,9 @@
+{
+    "tables": [
+        {"name": "companies", "columns": [{"name": "id", "type": "bigint"}, {"name": "name", "type": "varchar"}]},
+        {"name": "invoices", "columns": [{"name": "id", "type": "bigint"}, {"name": "company_id", "type": "bigint"}]}
+    ],
+    "foreignKeys": [
+        {"from_table": "invoices", "from_columns": ["company_id"], "to_table": "companies", "to_columns": ["id"]}
+    ]
+}
