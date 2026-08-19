@@ -98,6 +98,7 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }
             "calls" => resolve_call(&idx, e, name),
+            "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,
         };
         if let Some(t) = target {
@@ -144,6 +145,24 @@ fn resolve_relative(importer: &str, spec: &str, files: &HashSet<&str>) -> Option
         }
     }
     None
+}
+
+/// Resolve a Blade dotted view name (`layouts.app`) to a `.blade.php` file node
+/// (`resources/views/layouts/app.blade.php`) by unique path-suffix match. Keeps
+/// the raw name (via the caller's fallback) when it is ambiguous or unknown --
+/// e.g. namespaced/kebab component tags (`mail::message`, `input-group`).
+fn resolve_view(name: &str, files: &HashSet<&str>) -> Option<String> {
+    let suffix = format!("{}.blade.php", name.replace('.', "/"));
+    if files.contains(suffix.as_str()) {
+        return Some(suffix);
+    }
+    let tail = format!("/{suffix}");
+    let mut hits = files.iter().copied().filter(|f| f.ends_with(&tail));
+    let first = hits.next()?;
+    match hits.next() {
+        None => Some(first.to_string()),
+        Some(_) => None, // ambiguous -> keep raw
+    }
 }
 
 fn resolve_call(idx: &Index, e: &RawEdge, name: &str) -> Option<String> {

@@ -30,6 +30,7 @@ pub fn extract(rel: &str, base: &str, code: &str, source_type: SourceType) -> (V
     ext.nodes.push(Node { id: rel.to_string(), name: base.to_string(), kind: "file", path: rel.to_string(), start: 0, end: 0 });
     ext.minted.insert(rel.to_string());
     ext.visit_program(&ret.program);
+    ext.edges.extend(crate::lang::scan(rel, code));
     (ext.nodes, ext.edges)
 }
 
@@ -53,6 +54,9 @@ pub fn extract_vue(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge
     ext.scope.push(comp_id);
 
     ext.visit_program(&ret.program);
+    // Scan the FULL SFC (not just the extracted <script>) so template `$t(...)`
+    // usages are captured too.
+    ext.edges.extend(crate::lang::scan(rel, code));
     (ext.nodes, ext.edges)
 }
 

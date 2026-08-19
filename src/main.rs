@@ -3,8 +3,10 @@
 //! whole-tree index, and writes a `wiring.json` graph.
 
 mod ast;
+mod blade;
 mod extract;
 mod js;
+mod lang;
 mod model;
 mod query;
 mod resolve;
@@ -56,6 +58,9 @@ enum Cmd {
     Body { symbol: String },
     /// List what references a symbol (calls/imports/extends/implements).
     Callers { symbol: String },
+    /// List files that use a translation KEY (exact, else substring), across
+    /// PHP/Vue/Blade -- read from the `.graph/lang.json` sidecar.
+    Uses { key: String },
     /// Report graph gaps: unreferenced symbols, unresolved edges, empty files.
     Missing,
     /// List DB tables from a schema JSON (`php artisan schema:svg --format=json`).
@@ -105,6 +110,13 @@ fn extract_file(root: &Path, file_path: &Path) -> (Vec<Node>, Vec<RawEdge>) {
     let base = file_path.file_name().and_then(|n| n.to_str()).unwrap_or(&rel).to_string();
     let ext = file_path.extension().and_then(|x| x.to_str()).unwrap_or("");
 
+    // Blade templates report extension "php" but are not parseable PHP (Mago
+    // chokes on `@directive` / `{{ }}` / `<x-...>`), so route them to the
+    // hand-scanner before the Mago arm.
+    if base.ends_with(".blade.php") {
+        return blade::extract(&rel, &base, &code);
+    }
+
     match ext {
         "php" => extract_php(&rel, &base, &code),
         "vue" => js::extract_vue(&rel, &base, &code),
@@ -124,7 +136,9 @@ fn extract_php(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     let mut ctx = Ctx::new(rel.to_string());
     ctx.push_file(base.to_string());
     Ext::run(program, &mut ctx);
-    (ctx.nodes, ctx.edges)
+    let mut edges = ctx.edges;
+    edges.extend(lang::scan(rel, code));
+    (ctx.nodes, edges)
 }
 
 /// Extract every file into one node/edge set, in parallel over a bounded pool.
@@ -197,6 +211,8 @@ struct Summary {
     files: usize,
     nodes: usize,
     edges: usize,
+    lang_keys: usize,
+    lang_usages: usize,
     kinds: Vec<(&'static str, usize)>,
     elapsed_ms: u128,
 }
@@ -212,7 +228,21 @@ fn run(root: &str, out_dir: &str) -> Result<Summary, std::io::Error> {
     // few large parse arenas are alive at once -- the CPU win without an
     // all-cores memory spike. `PLOUF_THREADS=1` forces sequential for the
     // lowest peak RSS; higher values trade memory for speed.
-    let (nodes, edges) = extract_all(&root_path, &files)?;
+    let (nodes, mut edges) = extract_all(&root_path, &files)?;
+
+    // Translation-key usages can be numerous (a gettext app has thousands) and
+    // would bloat the graph everyone loads, so they never enter `wiring.json`:
+    // drain them into `(file, key)` pairs for their own `lang.json` sidecar.
+    let mut lang_usages: Vec<(String, String)> = Vec::new();
+    edges.retain(|e| {
+        if e.relation == "uses-lang" {
+            if let Some(key) = &e.name {
+                lang_usages.push((e.source.clone(), key.clone()));
+            }
+            return false;
+        }
+        true
+    });
 
     let resolved = resolve::resolve(&nodes, &edges);
     drop(edges); // raw edges are consumed; free them before serializing
@@ -224,15 +254,24 @@ fn run(root: &str, out_dir: &str) -> Result<Summary, std::io::Error> {
     write_wiring(&mut writer, &nodes, &resolved)?;
     writer.flush()?;
 
+    // The translation-key index, streamed to its own sidecar so `wiring.json`
+    // stays lean and only the `uses` verb pays to load it.
+    let lang_file = std::fs::File::create(format!("{graph_dir}/lang.json"))?;
+    let mut lang_writer = BufWriter::new(lang_file);
+    let lang_keys = lang::write_index(&mut lang_writer, &lang_usages)?;
+    lang_writer.flush()?;
+
     // A tiny sidecar the status line (and other tooling) can read without
     // parsing the multi-MB wiring.json on every render.
-    let stats = json!({"files": files.len(), "nodes": nodes.len(), "edges": resolved.len()});
+    let stats = json!({"files": files.len(), "nodes": nodes.len(), "edges": resolved.len(), "lang_keys": lang_keys, "lang_usages": lang_usages.len()});
     std::fs::write(format!("{graph_dir}/stats.json"), serde_json::to_string(&stats).map_err(std::io::Error::other)?)?;
 
     Ok(Summary {
         files: files.len(),
         nodes: nodes.len(),
         edges: resolved.len(),
+        lang_keys,
+        lang_usages: lang_usages.len(),
         kinds: kind_histogram(&nodes),
         elapsed_ms: start.elapsed().as_millis(),
     })
@@ -276,6 +315,7 @@ fn main() -> ExitCode {
         Cmd::Index { root } => run(&root, &cli.out).map(|s| {
             eprintln!("plouf-rs: {} files, {} nodes, {} edges in {} ms", s.files, s.nodes, s.edges, s.elapsed_ms);
             eprintln!("kinds: {:?}", s.kinds);
+            eprintln!("lang: {} keys, {} usages", s.lang_keys, s.lang_usages);
             if let Some(kb) = peak_rss_kb() {
                 eprintln!("peak RSS: {} MiB", kb / 1024);
             }
@@ -284,6 +324,7 @@ fn main() -> ExitCode {
         Cmd::Sig { symbol } => query::signature(&cli.out, &symbol),
         Cmd::Body { symbol } => query::body(&cli.out, &symbol),
         Cmd::Callers { symbol } => query::callers(&cli.out, &symbol),
+        Cmd::Uses { key } => query::uses(&cli.out, &key),
         Cmd::Missing => query::missing(&cli.out),
         Cmd::Tables { schema } => schema::list_tables(&schema),
         Cmd::Table { name, schema } => schema::table(&schema, &name),

@@ -148,9 +148,47 @@ pub fn callers(out: &str, symbol: &str) -> Result<(), io::Error> {
         .edges
         .iter()
         .filter(|e| e.target == node.id)
-        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements"))
+        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements" | "includes"))
         .map(|e| format!("{}\t{}", e.relation, e.source))
         .collect();
+    hits.sort();
+    hits.dedup();
+    for h in hits {
+        println!("{h}");
+    }
+    Ok(())
+}
+
+/// List files that use a translation `key`, from the `.graph/lang.json` sidecar
+/// (kept out of `wiring.json` because there can be thousands). Prints
+/// `key<TAB>file` per usage. Tries an exact key first; if none, falls back to a
+/// case-insensitive substring match over every key (discovery).
+pub fn uses(out: &str, key: &str) -> Result<(), io::Error> {
+    let path = format!("{out}/.graph/lang.json");
+    let text = fs::read_to_string(&path)?;
+    let v: Value = serde_json::from_str(&text).map_err(io::Error::other)?;
+    let obj = v.as_object().ok_or_else(|| io::Error::other("lang.json: not an object"))?;
+
+    let files_of = |k: &str| -> Vec<String> {
+        obj.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+
+    let mut hits: Vec<String> = files_of(key).into_iter().map(|f| format!("{key}\t{f}")).collect();
+    if hits.is_empty() {
+        let needle = key.to_lowercase();
+        for (k, v) in obj {
+            if k.to_lowercase().contains(&needle) {
+                if let Some(arr) = v.as_array() {
+                    for f in arr.iter().filter_map(Value::as_str) {
+                        hits.push(format!("{k}\t{f}"));
+                    }
+                }
+            }
+        }
+    }
     hits.sort();
     hits.dedup();
     for h in hits {
@@ -182,7 +220,7 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
     let mut unresolved: Vec<&EdgeRec> = graph
         .edges
         .iter()
-        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements"))
+        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements" | "includes"))
         .filter(|e| !ids.contains(e.target.as_str()))
         .collect();
     unresolved.sort_by(|a, b| a.target.cmp(&b.target));

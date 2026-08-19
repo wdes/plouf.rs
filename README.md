@@ -7,6 +7,9 @@ grepping it.
 
 - **PHP** via [Mago](https://github.com/carthage-software/mago)
 - **JS / TS / Vue** via [oxc](https://oxc.rs) (`.vue` = its `<script>` blocks)
+- **Blade** templates (`*.blade.php`) via a hand-scanner: view references
+  (`@include`/`@extends`/`@component`/`<x-...>`) and translation keys
+- **Translation keys** across all of the above, indexed to a `lang.json` sidecar
 
 One graph spans backend and frontend.
 
@@ -40,9 +43,11 @@ Needs a recent Rust toolchain (Mago requires rustc >= 1.97).
 plouf-rs index . --out build/out
 ```
 
-Writes `build/out/.graph/wiring.json` plus a tiny `stats.json`. Extraction is
-parallel; `PLOUF_THREADS=1` forces sequential for the lowest peak RSS, higher
-values trade memory for speed.
+Writes `build/out/.graph/wiring.json` plus a tiny `stats.json` and a
+`lang.json` (the translation-key index -- a separate sidecar because a gettext
+app has thousands of keys that would bloat the graph everyone loads).
+Extraction is parallel; `PLOUF_THREADS=1` forces sequential for the lowest peak
+RSS, higher values trade memory for speed.
 
 ## Query
 
@@ -53,6 +58,7 @@ plouf-rs find CompanyController   # symbols whose id/name matches
 plouf-rs sig Company.getId        # a symbol's declaration line
 plouf-rs body Foo.convert         # full source (fn/class/enum/...)
 plouf-rs callers BaseRequest      # who references it (blast radius)
+plouf-rs uses invoice.title       # files using a translation key (exact, else substring)
 plouf-rs missing                  # gaps: unreferenced/unresolved/empty
 ```
 
@@ -78,7 +84,10 @@ plouf-rs table companies --schema schema.json
 - **Edges**: `contains`, `imports` (JS relative specifiers resolve to files),
   `extends` / `implements`, `calls` (resolved via a typed receiver -- `$this` /
   `this`, typed params, `new X()` / annotated locals -- then the extends chain,
-  else a unique-name fallback).
+  else a unique-name fallback), `includes` (Blade view references -- dotted view
+  names resolve to `*.blade.php` file nodes).
+- **Translation keys** are not edges in `wiring.json`; they live in the
+  `lang.json` sidecar as `{key: [file, ...]}` and are read by `uses`.
 
 ## Tests
 

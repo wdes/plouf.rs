@@ -39,9 +39,15 @@ plouf-rs index . --out build/plouf-rs-out
 plouf-rs find CompanyController          # symbols whose id/name matches
 plouf-rs sig Company.getId               # a symbol's declaration line
 plouf-rs body InvoiceConverter.convert   # full source of a fn/method/class/enum
-plouf-rs callers BaseRequest             # who references it (calls/imports/extends/implements)
+plouf-rs callers BaseRequest             # who references it (calls/imports/extends/includes)
+plouf-rs uses invoice.title              # files using a translation key (PHP/Vue/Blade)
 plouf-rs missing                         # gaps: unreferenced, unresolved, empty files
 ```
+
+`uses` takes an exact translation key (Laravel `__`/`trans`/`trans_choice`, Vue
+`$t`/`t`, gettext) or, failing that, a case-insensitive substring -- handy for
+finding every surface that references a key, including Blade templates and
+`.vue` `<template>` `$t(...)`.
 
 A bare name works when unique; otherwise the candidates are listed -- copy a full
 id (`path#Class.method`) to disambiguate.
