@@ -25,6 +25,9 @@ curl -fsSL -o /tmp/plouf-rs.deb \
 sudo dpkg -i /tmp/plouf-rs.deb
 ```
 
+This installs the binary to `/usr/bin/plouf-rs` (on your `PATH`) and drops this
+skill under `/usr/share/doc/plouf-rs/skill/`.
+
 ## 1. Build the index (once per session, or after large changes)
 
 ```bash

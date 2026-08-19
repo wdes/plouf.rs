@@ -10,23 +10,7 @@ grepping it.
 
 One graph spans backend and frontend.
 
-## Install
-
-Download the `.deb` from the [releases](https://github.com/wdes/plouf.rs/releases)
-and install it:
-
-```sh
-curl -fsSL -o /tmp/plouf-rs.deb \
-  https://github.com/wdes/plouf.rs/releases/download/v0.1.0/plouf-rs_0.1.0-1_amd64.deb
-sudo dpkg -i /tmp/plouf-rs.deb
-```
-
-This puts `plouf-rs` on your `PATH`. To pick up a project skill for agents, copy
-`.claude/skills/plouf/` from this repo into your project.
-
 ## Build
-
-Or build from source:
 
 ```sh
 cargo build --release

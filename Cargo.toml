@@ -15,6 +15,14 @@ path = "src/main.rs"
 maintainer = "William Desportes <williamdes@wdes.fr>"
 section = "devel"
 priority = "optional"
+# Ship the /plouf agent skill inside the package (cargo-deb's equivalent of
+# debian/docs) so installing the .deb also drops the skill under
+# /usr/share/doc/ -- no GitHub download needed to pick it up.
+assets = [
+    ["target/release/plouf-rs", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/plouf-rs/README.md", "644"],
+    [".claude/skills/plouf/SKILL.md", "usr/share/doc/plouf-rs/skill/SKILL.md", "644"],
+]
 
 # plouf.rs -- a Rust code-graph, using Mago (carthage-software/mago) for the
 # PHP parse side and oxc for JS/TS/Vue. Emits a `wiring.json` graph. Build
