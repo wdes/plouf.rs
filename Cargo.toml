@@ -6,6 +6,11 @@ description = "A deterministic code-graph for a polyglot repo (PHP via Mago, JS/
 license = "MPL-2.0"
 authors = ["William Desportes <williamdes@wdes.fr>"]
 repository = "https://github.com/wdes/plouf.rs"
+readme = "README.md"
+keywords = ["code-graph", "static-analysis", "php", "laravel", "ast"]
+categories = ["development-tools"]
+# Keep the published crate to source + docs: drop CI, agent tooling, repo meta.
+exclude = [".github", ".claude", ".gitattributes", ".gitignore"]
 
 [[bin]]
 name = "plouf-rs"

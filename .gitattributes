@@ -1,0 +1,6 @@
+# Keep `git archive` / GitHub source tarballs to the source + docs only:
+# drop CI, agent tooling, and repo-meta files.
+/.github/ export-ignore
+/.claude/ export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore

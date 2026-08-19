@@ -679,8 +679,8 @@ mod tests {
         assert_eq!(super::convention_table("InvoiceLine"), "invoice_lines");
         assert_eq!(super::convention_table("User"), "users");
         assert_eq!(super::convention_table("Category"), "categories");
-        // Latin -is -> -es (this bit the InventoryVariantAxis model on Mounch).
-        assert_eq!(super::convention_table("InventoryVariantAxis"), "inventory_variant_axes");
+        // Latin -is -> -es, e.g. a `VariantAxis` model maps to `variant_axes`.
+        assert_eq!(super::convention_table("VariantAxis"), "variant_axes");
         assert_eq!(super::convention_table("Analysis"), "analyses");
     }
 }
