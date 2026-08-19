@@ -18,7 +18,27 @@ use oxc::ast_visit::Visit;
 use oxc::parser::Parser;
 use oxc::span::SourceType;
 
+use crate::format::Format;
 use crate::model::{Node, RawEdge};
+
+/// The JS format family: TypeScript, JavaScript, Vue SFCs, and Angular
+/// (`@Component` classes) -- everything oxc parses.
+pub struct Js;
+
+impl Format for Js {
+    fn matches(&self, _base: &str, ext: &str) -> bool {
+        matches!(ext, "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "vue")
+    }
+
+    fn extract(&self, rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+        let path = std::path::Path::new(base);
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vue")) {
+            return extract_vue(rel, base, code);
+        }
+        let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::tsx());
+        extract(rel, base, code, source_type)
+    }
+}
 
 /// Parse one JS/TS source and return its nodes + raw edges (owned; the arena is
 /// dropped on return). `rel` is the repo-relative path, `base` the file name.

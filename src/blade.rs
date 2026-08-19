@@ -16,7 +16,22 @@
 //! captured STRING LITERAL (single or double quoted) produces an edge; a purely
 //! dynamic reference such as `@include($var)` is skipped.
 
+use crate::format::Format;
 use crate::model::{Node, RawEdge};
+
+/// The Blade format: routes every `*.blade.php`. Registered before PHP so these
+/// templates never reach Mago (which chokes on `@directive` / `{{ }}`).
+pub struct Blade;
+
+impl Format for Blade {
+    fn matches(&self, base: &str, _ext: &str) -> bool {
+        base.ends_with(".blade.php")
+    }
+
+    fn extract(&self, rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+        extract(rel, base, code)
+    }
+}
 
 /// Extract a Blade template (`*.blade.php`) into nodes + raw edges.
 ///

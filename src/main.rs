@@ -2,17 +2,17 @@
 //! source file under a root, emits a node/edge model, resolves it against a
 //! whole-tree index, and writes a `wiring.json` graph.
 
-mod ast;
 mod blade;
-mod extract;
+mod format;
+mod html;
 mod js;
 mod lang;
 mod model;
+mod php;
 mod query;
 mod resolve;
 mod schema;
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -23,10 +23,6 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 
 use clap::Parser;
-use mago_allocator::LocalArena;
-use mago_database::file::File;
-use mago_syntax::parser::parse_file;
-use oxc::span::SourceType;
 use serde_json::json;
 
 /// Version string for `--version`: the crate version plus the build hash
@@ -81,77 +77,23 @@ enum Cmd {
     },
 }
 
-use crate::extract::{Ctx, Ext};
 use crate::model::{Node, RawEdge};
 
-/// Source extensions we extract: PHP (via Mago) plus JS/TS/Vue (via oxc).
-const SOURCE_EXTS: [&str; 11] =
-    ["php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html"];
-
 /// Collect source files under `root`, honouring `.gitignore` (and parent
-/// gitignores) via the `ignore` crate -- gitignore-aware.
+/// gitignores) via the `ignore` crate -- gitignore-aware. The extensions come
+/// from the format registry (`format::SOURCE_EXTS`).
 fn collect_sources(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for result in WalkBuilder::new(root).hidden(false).parents(true).build() {
         let Ok(entry) = result else { continue };
         let path = entry.path();
         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
-        if path.is_file() && SOURCE_EXTS.contains(&ext) {
+        if path.is_file() && format::SOURCE_EXTS.contains(&ext) {
             out.push(path.to_path_buf());
         }
     }
     out.sort();
     out
-}
-
-/// Parse one file and return its nodes + raw edges (empty on a read error).
-/// Routes by extension: PHP through Mago, JS/TS/Vue through oxc.
-fn extract_file(root: &Path, file_path: &Path) -> (Vec<Node>, Vec<RawEdge>) {
-    let Ok(code) = std::fs::read_to_string(file_path) else {
-        return (Vec::new(), Vec::new());
-    };
-    let rel = file_path.strip_prefix(root).unwrap_or(file_path).to_string_lossy().replace('\\', "/");
-    let base = file_path.file_name().and_then(|n| n.to_str()).unwrap_or(&rel).to_string();
-    let ext = file_path.extension().and_then(|x| x.to_str()).unwrap_or("");
-
-    // Blade templates report extension "php" but are not parseable PHP (Mago
-    // chokes on `@directive` / `{{ }}` / `<x-...>`), so route them to the
-    // hand-scanner before the Mago arm.
-    if base.ends_with(".blade.php") {
-        return blade::extract(&rel, &base, &code);
-    }
-
-    match ext {
-        "php" => extract_php(&rel, &base, &code),
-        "vue" => js::extract_vue(&rel, &base, &code),
-        "html" => extract_html(&rel, &base, &code),
-        _ => {
-            let source_type = SourceType::from_path(file_path).unwrap_or_else(|_| SourceType::tsx());
-            js::extract(&rel, &base, &code, source_type)
-        }
-    }
-}
-
-/// Extract an HTML file (e.g. an Angular external template): a single `file`
-/// node plus translation-key usages (the `| translate` pipe). HTML holds no code
-/// symbols, so nothing else is emitted.
-fn extract_html(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
-    let node = Node { id: rel.to_string(), name: base.to_string(), kind: "file", path: rel.to_string(), start: 0, end: 0 };
-    (vec![node], lang::scan(rel, code))
-}
-
-/// Parse one PHP file with Mago and return its nodes + raw edges.
-fn extract_php(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
-    let arena = LocalArena::new();
-    let file = File::ephemeral(Cow::Owned(rel.to_string().into_bytes()), Cow::Owned(code.to_string().into_bytes()));
-    let program = parse_file(&arena, &file);
-
-    let mut ctx = Ctx::new(rel.to_string());
-    ctx.push_file(base.to_string());
-    Ext::run(program, &mut ctx);
-    let mut edges = ctx.edges;
-    edges.extend(lang::scan(rel, code));
-    (ctx.nodes, edges)
 }
 
 /// Extract every file into one node/edge set, in parallel over a bounded pool.
@@ -170,7 +112,7 @@ fn extract_all(root: &Path, files: &[PathBuf]) -> Result<(Vec<Node>, Vec<RawEdge
     // possible peak RSS.
     if threads == 1 {
         for f in files {
-            let (mut fnodes, mut fedges) = extract_file(root, f);
+            let (mut fnodes, mut fedges) = format::extract(root, f);
             nodes.append(&mut fnodes);
             edges.append(&mut fedges);
         }
@@ -189,7 +131,7 @@ fn extract_all(root: &Path, files: &[PathBuf]) -> Result<(Vec<Node>, Vec<RawEdge
             .fold(
                 || (Vec::new(), Vec::new()),
                 |mut acc: (Vec<Node>, Vec<RawEdge>), f| {
-                    let (mut fnodes, mut fedges) = extract_file(root, f);
+                    let (mut fnodes, mut fedges) = format::extract(root, f);
                     acc.0.append(&mut fnodes);
                     acc.1.append(&mut fedges);
                     acc

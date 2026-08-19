@@ -1,25 +1,123 @@
-//! The per-file AST walk: turns a parsed `Program` into nodes + raw edges,
-//! tracking scope, class stack, and `$var -> class` bindings for receiver-typed
-//! call resolution.
+//! PHP format: parse with Mago, walk the CST into the node/edge model, and scan
+//! translation keys. All PHP-specific code lives here -- the AST helpers, the
+//! walker, and the `Format` entry point.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use mago_syntax::cst::cst::{
-    ArrowFunction, Class, Closure, Enum, Expression, Function, FunctionLikeParameterList,
-    Interface, Method, MethodCall, StaticMethodCall, Trait, TraitUse, Use, UseItems,
-};
+use mago_allocator::LocalArena;
+use mago_database::file::File;
 use mago_span::HasSpan;
+use mago_syntax::cst::cst::{
+    ArrowFunction, Class, ClassLikeMemberSelector, Closure, Enum, Expression, Function,
+    FunctionLikeParameterList, Hint, Identifier, Interface, Method, MethodCall, StaticMethodCall,
+    Trait, TraitUse, Use, UseItems, Variable,
+};
 use mago_syntax::cst::Program;
+use mago_syntax::parser::parse_file;
 use mago_syntax::walker::Walker;
 
-use crate::ast::{bytes, callee_name, hint_class, ident_full, ident_name, selector_name, var_name};
+use crate::format::Format;
 use crate::model::{Node, RawEdge};
 
+/// The PHP format: routes every `*.php` that is not a Blade template.
+pub struct Php;
+
+impl Format for Php {
+    // Blade precedes PHP in the registry, so a `*.blade.php` never reaches here.
+    fn matches(&self, _base: &str, ext: &str) -> bool {
+        ext == "php"
+    }
+
+    fn extract(&self, rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+        extract(rel, base, code)
+    }
+}
+
+/// Parse one PHP file with Mago and return its nodes + raw edges (plus
+/// translation-key usages from the shared scanner).
+pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Owned(rel.to_string().into_bytes()), Cow::Owned(code.to_string().into_bytes()));
+    let program = parse_file(&arena, &file);
+
+    let mut ctx = Ctx::new(rel.to_string());
+    ctx.push_file(base.to_string());
+    Ext::run(program, &mut ctx);
+    let mut edges = ctx.edges;
+    edges.extend(crate::lang::scan(rel, code));
+    (ctx.nodes, edges)
+}
+
+// --- AST helpers -----------------------------------------------------------
+
+/// A byte-slice AST value as an owned `String` (lossy on invalid UTF-8).
+fn bytes(v: &[u8]) -> String {
+    String::from_utf8_lossy(v).into_owned()
+}
+
+/// The trailing segment of a `\`-qualified name (`App\Models\User` -> `User`).
+fn dequalify(name: &str) -> String {
+    name.rsplit('\\').next().unwrap_or(name).to_string()
+}
+
+/// The full (leading-`\`-trimmed) text of an identifier.
+fn ident_full(id: &Identifier) -> String {
+    let raw = match id {
+        Identifier::Local(l) => bytes(l.value),
+        Identifier::Qualified(q) => bytes(q.value),
+        Identifier::FullyQualified(f) => bytes(f.value),
+    };
+    raw.trim_start_matches('\\').to_string()
+}
+
+/// The bare (de-qualified) name of an identifier.
+fn ident_name(id: &Identifier) -> String {
+    dequalify(&ident_full(id))
+}
+
+/// The single class named by a type hint, if any (unwraps `?T`/`(T)`; `None`
+/// for unions, primitives, `array`, `void`, ...).
+fn hint_class(h: &Hint) -> Option<String> {
+    match h {
+        Hint::Identifier(id) => Some(ident_name(id)),
+        Hint::Nullable(n) => hint_class(n.hint),
+        Hint::Parenthesized(p) => hint_class(p.hint),
+        _ => None,
+    }
+}
+
+/// The member name of a `->m`/`::m` selector, when it's a plain identifier.
+fn selector_name(sel: &ClassLikeMemberSelector) -> Option<String> {
+    match sel {
+        ClassLikeMemberSelector::Identifier(id) => Some(bytes(id.value)),
+        _ => None,
+    }
+}
+
+/// The callee name of a `foo()` call, when it's a plain identifier.
+fn callee_name(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Identifier(id) => Some(ident_name(id)),
+        _ => None,
+    }
+}
+
+/// The `$var` text of a direct-variable expression (e.g. the `->` receiver).
+fn var_name(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Variable(Variable::Direct(dv)) => Some(bytes(dv.name)),
+        _ => None,
+    }
+}
+
+// --- the walk --------------------------------------------------------------
+
 /// Accumulator threaded through the walk (the walker itself is stateless).
-pub struct Ctx {
-    pub rel: String,
-    pub nodes: Vec<Node>,
-    pub edges: Vec<RawEdge>,
+struct Ctx {
+    rel: String,
+    nodes: Vec<Node>,
+    edges: Vec<RawEdge>,
     scope: Vec<String>,
     class_stack: Vec<String>,
     minted: HashSet<String>,
@@ -28,7 +126,7 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    pub fn new(rel: String) -> Self {
+    fn new(rel: String) -> Self {
         let mut minted = HashSet::new();
         minted.insert(rel.clone());
         Self {
@@ -45,7 +143,7 @@ impl Ctx {
 
     /// Seed the file node before walking (file body is read wholesale, so its
     /// span is left at 0..0).
-    pub fn push_file(&mut self, name: String) {
+    fn push_file(&mut self, name: String) {
         self.nodes.push(Node { id: self.rel.clone(), name, kind: "file", path: self.rel.clone(), start: 0, end: 0 });
     }
 
@@ -129,11 +227,11 @@ impl Ctx {
 }
 
 /// The stateless walker; all state lives in [`Ctx`].
-pub struct Ext;
+struct Ext;
 
 impl Ext {
     /// Walk a parsed program, filling `ctx`.
-    pub fn run(program: &Program, ctx: &mut Ctx) {
+    fn run(program: &Program, ctx: &mut Ctx) {
         Self.walk_program(program, ctx);
     }
 }
@@ -278,22 +376,10 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{Ctx, Ext};
     use crate::model::{Node, RawEdge};
-    use mago_allocator::LocalArena;
-    use mago_database::file::File;
-    use mago_syntax::parser::parse_file;
-    use std::borrow::Cow;
 
     fn extract(rel: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
-        let arena = LocalArena::new();
-        let file =
-            File::ephemeral(Cow::Owned(rel.to_string().into_bytes()), Cow::Owned(code.to_string().into_bytes()));
-        let program = parse_file(&arena, &file);
-        let mut ctx = Ctx::new(rel.to_string());
-        ctx.push_file("f.php".to_string());
-        Ext::run(program, &mut ctx);
-        (ctx.nodes, ctx.edges)
+        super::extract(rel, "f.php", code)
     }
 
     fn has_call(edges: &[RawEdge], name: &str, recv: Option<&str>) -> bool {
