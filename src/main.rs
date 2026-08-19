@@ -29,10 +29,14 @@ use mago_syntax::parser::parse_file;
 use oxc::span::SourceType;
 use serde_json::json;
 
+/// Version string for `--version`: the crate version plus the build hash
+/// (`BUILD_HASH`, from `build.rs` -- a short git hash or a compile timestamp).
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"), " (", env!("BUILD_HASH"), ")");
+
 /// A code-graph for PHP (Mago) + JS/TS/Vue (oxc): `index` builds
 /// it, the other subcommands query it.
 #[derive(Parser)]
-#[command(name = "plouf-rs", about = "Code-graph (wiring.json) for PHP + JS/TS/Vue")]
+#[command(name = "plouf-rs", version = VERSION, about = "Code-graph (wiring.json) for PHP + JS/TS/Vue")]
 struct Cli {
     /// Graph directory: `index` writes `<out>/.graph/wiring.json`; queries read it.
     #[arg(short, long, default_value = "build/plouf-rs-out", global = true)]
