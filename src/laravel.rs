@@ -223,6 +223,26 @@ mod tests {
     }
 
     #[test]
+    fn model_table_resolution_edges() {
+        // Not a model base + no $table -> nothing.
+        assert_eq!(super::model_table("PriceService", &["SomeBase".to_string()], "class body"), None);
+        // Explicit $table wins regardless of the base class.
+        assert_eq!(super::model_table("X", &[], "protected $table = 'widgets';").as_deref(), Some("widgets"));
+        // A `$table` that is not a string assignment is ignored.
+        assert_eq!(super::model_table("X", &[], "$table->string('name');"), None);
+        // A model base with no explicit $table falls back to the convention.
+        assert_eq!(super::model_table("Company", &["Model".to_string()], "").as_deref(), Some("companies"));
+    }
+
+    #[test]
+    fn scan_tables_skips_dynamic_table_names() {
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<RawEdge> = Vec::new();
+        super::scan_tables("f.php", "<?php DB::table($name)->get(); Schema::create($t);", &mut nodes, &mut edges);
+        assert!(edges.is_empty() && nodes.is_empty());
+    }
+
+    #[test]
     fn scan_tables_migrations_and_query_builder() {
         let code = "<?php\nSchema::create('companies', function ($t) { $t->string('name'); });\nDB::table('users')->where('id', 1);";
         let mut nodes: Vec<Node> = Vec::new();

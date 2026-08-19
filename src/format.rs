@@ -44,3 +44,26 @@ pub fn extract(root: &Path, path: &Path) -> (Vec<Node>, Vec<RawEdge>) {
     }
     (Vec::new(), Vec::new())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::path::Path;
+
+    #[test]
+    fn unreadable_file_yields_empty() {
+        let (nodes, edges) = super::extract(Path::new("/"), Path::new("/no/such/plouf/file.php"));
+        assert!(nodes.is_empty() && edges.is_empty());
+    }
+
+    #[test]
+    fn no_matching_format_yields_empty() {
+        // A `.rs` file is collected by nothing -- dispatch returns empty.
+        let dir = std::env::temp_dir();
+        let f = dir.join("plouf_fmt_probe.rs");
+        std::fs::write(&f, "fn main() {}").unwrap();
+        let (nodes, edges) = super::extract(&dir, &f);
+        assert!(nodes.is_empty() && edges.is_empty());
+        std::fs::remove_file(&f).ok();
+    }
+}

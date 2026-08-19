@@ -284,6 +284,48 @@ mod tests {
     }
 
     #[test]
+    fn resolves_relative_index_blade_include_and_keeps_unresolved() {
+        // relative import resolving through `/index.*`
+        let nodes = vec![node("a/b.ts", "b.ts", "file"), node("a/x/index.ts", "index.ts", "file")];
+        let edges = vec![RawEdge::named("a/b.ts".to_string(), "imports", "./x".to_string())];
+        let r = resolve(&nodes, &edges);
+        assert_eq!(r.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str()), Some("a/x/index.ts"));
+
+        // a dotted Blade view resolves to its `.blade.php` file
+        let nodes = vec![node("resources/views/layouts/app.blade.php", "app.blade.php", "file")];
+        let edges = vec![RawEdge::named("v.blade.php".to_string(), "includes", "layouts.app".to_string())];
+        let r = resolve(&nodes, &edges);
+        assert_eq!(
+            r.iter().find(|e| e.relation == "includes").map(|e| e.target.as_str()),
+            Some("resources/views/layouts/app.blade.php")
+        );
+
+        // an unresolvable relative import keeps the raw specifier
+        let nodes = vec![node("a/b.ts", "b.ts", "file")];
+        let edges = vec![RawEdge::named("a/b.ts".to_string(), "imports", "./nope".to_string())];
+        let r = resolve(&nodes, &edges);
+        assert_eq!(r.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str()), Some("./nope"));
+    }
+
+    #[test]
+    fn resolves_eloquent_relation_and_table_edges() {
+        let nodes = vec![
+            node("app/Invoice.php#Invoice", "Invoice", "class"),
+            node("app/Company.php#Company", "Company", "class"),
+            node("table:companies", "companies", "table"),
+        ];
+        let edges = vec![
+            RawEdge::named("app/Invoice.php#Invoice".to_string(), "belongsTo", "Company".to_string()),
+            RawEdge::named("app/Company.php#Company".to_string(), "table", "companies".to_string()),
+            RawEdge::named("db/m.php".to_string(), "migrates", "companies".to_string()),
+        ];
+        let r = resolve(&nodes, &edges);
+        assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Company.php#Company"));
+        assert!(r.iter().any(|e| e.relation == "table" && e.target == "table:companies"));
+        assert!(r.iter().any(|e| e.relation == "migrates" && e.target == "table:companies"));
+    }
+
+    #[test]
     fn dedupes_identical_edges() {
         let nodes = vec![node("b.php#baz", "baz", "function")];
         let edges = vec![

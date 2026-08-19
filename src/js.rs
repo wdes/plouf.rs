@@ -579,4 +579,50 @@ mod tests {
         let (nodes, _) = extract_vue("resources/js/Foo.vue", "Foo.vue", sfc);
         assert!(nodes.iter().any(|n| n.kind == "component" && n.name == "CustomName"));
     }
+
+    fn vue_name(rel: &str, base: &str, sfc: &str) -> Option<String> {
+        extract_vue(rel, base, sfc).0.into_iter().find(|n| n.kind == "component").map(|n| n.name)
+    }
+
+    #[test]
+    fn extract_vue_name_from_export_default_forms() {
+        // export default { name }
+        assert_eq!(vue_name("a.vue", "a.vue", "<script>export default { name: 'Alpha' };</script>").as_deref(), Some("Alpha"));
+        // export default defineComponent({ name })
+        assert_eq!(
+            vue_name("b.vue", "b.vue", "<script>export default defineComponent({ name: 'Beta' });</script>").as_deref(),
+            Some("Beta")
+        );
+        // A non-component-macro default call falls back to the file stem.
+        assert_eq!(vue_name("Gamma.vue", "Gamma.vue", "<script>export default wrap({ name: 'X' });</script>").as_deref(), Some("Gamma"));
+        // A define macro with a non-object argument also falls back to the stem.
+        assert_eq!(vue_name("Delta.vue", "Delta.vue", "<script setup>defineOptions(shared);</script>").as_deref(), Some("Delta"));
+        // No script blocks -> stem.
+        assert_eq!(vue_name("Empty.vue", "Empty.vue", "<template><br/></template>").as_deref(), Some("Empty"));
+    }
+
+    #[test]
+    fn covers_ts_type_inference_branches() {
+        // Exercises: typed params (ref + primitive annotation), an annotated
+        // declarator, `new pkg.Maker()` (member callee), the peel wrappers
+        // (paren / `as` / non-null), a `this` receiver, and a private method.
+        let code = "export class C {\n  #secret(): void {}\n  use(x: Foo, s: string): void {\n    const z: Widget = build();\n    const w = new pkg.Maker();\n    (z).run();\n    (z as Any).area();\n    z!.size();\n    this.render();\n    x.go();\n    w.make();\n  }\n  render(): void {}\n}";
+        let (nodes, edges) = extract("t.ts", "t.ts", code, SourceType::ts());
+        assert!(names(&nodes, "method").contains(&"secret")); // private-identifier method key (# stripped)
+        assert!(has_call(&edges, "go", Some("Foo"))); // typed-param receiver
+        assert!(has_call(&edges, "render", Some("C"))); // `this` receiver
+        assert!(has_call(&edges, "run", Some("Widget"))); // paren-peeled receiver, annotated declarator
+        assert!(has_call(&edges, "area", Some("Widget"))); // `as`-peeled receiver
+        assert!(has_call(&edges, "size", Some("Widget"))); // non-null-peeled receiver
+        assert!(has_call(&edges, "make", Some("Maker"))); // `new pkg.Maker()` member callee
+    }
+
+    #[test]
+    fn vue_script_handles_multiple_and_malformed_blocks() {
+        // Two script blocks concatenate; an unterminated tag / block stops cleanly.
+        let two = vue_script("<script>const a = 1;</script>\n<script setup>const b = 2;</script>");
+        assert!(two.contains("const a") && two.contains("const b"));
+        assert!(vue_script("<script no-close-gt").is_empty()); // no `>`
+        assert!(vue_script("<script>never closes").is_empty()); // no `</script>`
+    }
 }

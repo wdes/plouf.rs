@@ -562,6 +562,16 @@ mod tests {
     }
 
     #[test]
+    fn covers_closures_statics_and_duplicate_names() {
+        let code = "<?php\nfunction a() {}\nfunction a() {}\nclass P {\n  public function m() { return parent::x(); }\n  public function n() { $f = function () { return 1; }; $g = fn () => 2; return static::y(); }\n}";
+        let (nodes, edges) = extract("d.php", code);
+        assert_eq!(nodes.iter().filter(|n| n.name == "a" && n.kind == "function").count(), 2); // id collision -> ~2
+        assert!(has_call(&edges, "x", Some("P"))); // parent:: resolves to the class
+        assert!(has_call(&edges, "y", Some("P"))); // static:: resolves to the class
+        assert!(nodes.iter().any(|n| n.name == "f")); // closure named from its `$f =` assignment
+    }
+
+    #[test]
     fn links_phpunit_covers_to_targets() {
         let code = "<?php\n#[CoversClass(Invoice::class)]\n#[CoversFunction('array_flatten')]\n/**\n * @coversDefaultClass \\App\\Services\\Billing\n */\nclass InvoiceTest extends TestCase {}";
         let (_, edges) = extract("tests/Feature/InvoiceTest.php", code);

@@ -546,6 +546,19 @@ mod tests {
     }
 
     #[test]
+    fn handles_unterminated_and_unbalanced_gracefully() {
+        // Unterminated comment drops the remainder -- no panic, no edges.
+        let (_, e) = extract("v.blade.php", "v.blade.php", "{{-- @include('x')\nno close");
+        assert_eq!(count(&e, "includes"), 0);
+        // Unbalanced directive paren -> no edge.
+        let (_, e) = extract("v.blade.php", "v.blade.php", "@include('y'");
+        assert_eq!(count(&e, "includes"), 0);
+        // Unterminated string literal in a directive -> no edge.
+        let (_, e) = extract("v.blade.php", "v.blade.php", "@include('y)");
+        assert_eq!(count(&e, "includes"), 0);
+    }
+
+    #[test]
     fn css_at_rules_do_not_false_match() {
         let code = "<style>@media (max-width: 600px) { a { transition: none; } }\n@page { margin: 1mm; }</style>\n@include('real.one')";
         let (_, edges) = extract("v.blade.php", "v.blade.php", code);
