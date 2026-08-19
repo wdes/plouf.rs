@@ -24,13 +24,14 @@ const FORMATS: &[&dyn Format] = &[
     &crate::php::Php,
     &crate::js::Js,
     &crate::html::Html,
+    &crate::twig::Twig,
     &crate::bbscript::BbScript,
 ];
 
 /// Extensions collected for extraction -- the union across formats, used as the
 /// directory-walk filter.
-pub const SOURCE_EXTS: [&str; 12] =
-    ["php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html", "bbscript"];
+pub const SOURCE_EXTS: [&str; 13] =
+    ["php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html", "twig", "bbscript"];
 
 /// Read one file and route it to the first matching format. Returns empty on a
 /// read error or when no format matches.

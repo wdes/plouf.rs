@@ -160,22 +160,27 @@ fn resolve_relative(importer: &str, spec: &str, files: &HashSet<&str>) -> Option
     None
 }
 
-/// Resolve a Blade dotted view name (`layouts.app`) to a `.blade.php` file node
-/// (`resources/views/layouts/app.blade.php`) by unique path-suffix match. Keeps
-/// the raw name (via the caller's fallback) when it is ambiguous or unknown --
-/// e.g. namespaced/kebab component tags (`mail::message`, `input-group`).
+/// Resolve a view name to a template file node by unique path-suffix match:
+/// Blade dotted `layouts.app` -> `.../layouts/app.blade.php`, or Twig slashed
+/// `database/row` -> `.../database/row.twig`. Keeps the raw name (via the
+/// caller's fallback) when it is ambiguous or unknown -- e.g. namespaced/kebab
+/// component tags (`mail::message`, `input-group`).
 fn resolve_view(name: &str, files: &HashSet<&str>) -> Option<String> {
-    let suffix = format!("{}.blade.php", name.replace('.', "/"));
-    if files.contains(suffix.as_str()) {
-        return Some(suffix);
+    let base = name.replace('.', "/");
+    for ext in [".blade.php", ".twig"] {
+        let suffix = format!("{base}{ext}");
+        if files.contains(suffix.as_str()) {
+            return Some(suffix);
+        }
+        let tail = format!("/{suffix}");
+        let mut hits = files.iter().copied().filter(|f| f.ends_with(&tail));
+        if let Some(first) = hits.next() {
+            if hits.next().is_none() {
+                return Some(first.to_string());
+            }
+        }
     }
-    let tail = format!("/{suffix}");
-    let mut hits = files.iter().copied().filter(|f| f.ends_with(&tail));
-    let first = hits.next()?;
-    match hits.next() {
-        None => Some(first.to_string()),
-        Some(_) => None, // ambiguous -> keep raw
-    }
+    None
 }
 
 /// Match an already-joined component path to a file node, inferring the

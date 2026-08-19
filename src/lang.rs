@@ -1,8 +1,8 @@
 //! Translation-key usage scan: a uniform textual pass over any source (PHP,
-//! JS/TS/Vue, Blade) that captures translation-function calls carrying a
+//! JS/TS/Vue, Blade, Twig) that captures translation-function calls carrying a
 //! string-literal key, emitting `uses-lang` edges from the file. Text rather
-//! than AST on purpose -- it covers Vue `<template>` `$t(...)` and phpMyAdmin
-//! gettext that the language parsers never see, with one code path for every
+//! than AST on purpose -- it covers Vue `<template>` `$t(...)` and gettext
+//! calls that the language parsers never see, with one code path for every
 //! surface. The target of a `uses-lang` edge is the raw key (never resolved to
 //! a node, like an external call name); the `uses` query verb reads them back.
 
@@ -32,8 +32,8 @@ const FNS: &[(&str, usize)] = &[
 ];
 
 /// Pipe names whose left operand is a translation key: Angular ngx-translate's
-/// `'KEY' | translate` and transloco's `'KEY' | transloco`.
-const PIPES: &[&str] = &["translate", "transloco"];
+/// `'KEY' | translate`, transloco's `'KEY' | transloco`, and Twig's `'KEY'|trans`.
+const PIPES: &[&str] = &["translate", "transloco", "trans"];
 
 /// Identifier byte: ASCII alphanumeric, `_`, or `$` (so `$t` and `__` read as
 /// single tokens and word boundaries are exact).

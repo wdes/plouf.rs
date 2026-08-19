@@ -15,6 +15,7 @@ mod query;
 mod resolve;
 mod router;
 mod schema;
+mod twig;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Write};
