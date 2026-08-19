@@ -271,8 +271,9 @@ fn handle_directive(name: &str, args: &str, rel: &str, edges: &mut Vec<RawEdge>)
     match name {
         // View references: the view is the first string literal.
         // `@extends` is layout inheritance -- same `includes` relation so one
-        // query covers every view reference.
-        "include" | "includeIf" | "extends" | "component" | "each" => {
+        // query covers every view reference. `@livewire('name')` references a
+        // Livewire component by its registered name.
+        "include" | "includeIf" | "extends" | "component" | "each" | "livewire" => {
             if let Some(view) = first_string(args) {
                 edges.push(RawEdge::named(rel.to_string(), "includes", view));
             }
@@ -326,6 +327,17 @@ fn scan_components(text: &str, rel: &str, edges: &mut Vec<RawEdge>) {
             continue;
         }
         edges.push(RawEdge::named(rel.to_string(), "includes", name));
+    }
+    // Livewire tags: `<livewire:foo-bar />` renders the Livewire component
+    // `foo-bar` (bladestan resolves these too). The name is a `:`-prefixed,
+    // kebab/dotted identifier.
+    for (idx, _) in text.match_indices("<livewire:") {
+        let rest = &text[idx + "<livewire:".len()..];
+        let name: String =
+            rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-').collect();
+        if !name.is_empty() {
+            edges.push(RawEdge::named(rel.to_string(), "includes", name));
+        }
     }
 }
 
@@ -410,6 +422,22 @@ mod tests {
         let (_, edges) = extract("v.blade.php", "v.blade.php", code);
         assert!(has(&edges, "includes", "foo.bar"));
         assert!(has(&edges, "includes", "alert"));
+    }
+
+    #[test]
+    fn captures_livewire_tags_and_directive() {
+        let code = "<livewire:user.profile :id=\"$id\" />\n<livewire:nav-bar />\n@livewire('admin.dashboard', ['x' => 1])";
+        let (_, edges) = extract("v.blade.php", "v.blade.php", code);
+        assert!(has(&edges, "includes", "user.profile"));
+        assert!(has(&edges, "includes", "nav-bar"));
+        assert!(has(&edges, "includes", "admin.dashboard"));
+    }
+
+    #[test]
+    fn keeps_namespaced_component_name_raw() {
+        let code = "<x-mail::message>Body</x-mail::message>";
+        let (_, edges) = extract("v.blade.php", "v.blade.php", code);
+        assert!(has(&edges, "includes", "mail::message"));
     }
 
     #[test]
