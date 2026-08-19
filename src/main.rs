@@ -13,6 +13,7 @@ mod model;
 mod php;
 mod query;
 mod resolve;
+mod router;
 mod schema;
 
 use std::collections::{HashMap, HashSet};

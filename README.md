@@ -99,9 +99,12 @@ plouf-rs table companies --schema schema.json
   its `table:<name>` node (explicit `$table` or the snake-case-plural
   convention), and a migration's `Schema::create/table('x')` links to the same
   node -- so `callers table:companies` lists the model **and** every migration.
-- **e2e** (bbscript): a `scenario` -> `route:<path>` `visits` edge, so
-  `callers route:/clients` lists every scenario that opens it. (Note: files under
-  a gitignored dir are only indexed when you point `index` straight at them.)
+- **e2e + routing**: a bbscript `scenario` -> `route:<path>` `visits` edge, and a
+  Vue/Angular router `route:<path>` -> page-component `renders` edge (resolved to
+  the `.vue`/`.ts` file). `route:<path>` is a shared join node, so
+  `callers route:/clients` lists the scenarios that open it and the page that
+  serves it -- scenario -> route -> source. (Literal paths only: a router
+  `/clients/:id` pattern does not match a concrete `/clients/5`.)
 - **Translation keys** are not edges in `wiring.json`; they live in the
   `lang.json` sidecar as `{key: [file, ...]}` and are read by `uses`.
 

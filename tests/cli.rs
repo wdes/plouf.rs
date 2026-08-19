@@ -81,6 +81,10 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["callers", "route:/clients", "--out", out_s]);
     assert!(o.contains("visits\t"), "bbscript visits: {o}");
 
+    // route -> page: the router links `route:/app` to the page component file.
+    let (o, _, _) = run(&["callers", "resources/js/App.vue", "--out", out_s]);
+    assert!(o.contains("renders\troute:/app"), "route->page: {o}");
+
     // missing: the gaps report runs clean.
     let (_, _, ok) = run(&["missing", "--out", out_s]);
     assert!(ok, "missing failed");

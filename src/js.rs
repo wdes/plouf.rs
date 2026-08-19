@@ -51,6 +51,10 @@ pub fn extract(rel: &str, base: &str, code: &str, source_type: SourceType) -> (V
     ext.minted.insert(rel.to_string());
     ext.visit_program(&ret.program);
     ext.edges.extend(crate::lang::scan(rel, code));
+    // Router configs (Vue/Angular): route:<path> -> page component.
+    let (mut rnodes, redges) = crate::router::scan(rel, code);
+    ext.nodes.append(&mut rnodes);
+    ext.edges.extend(redges);
     (ext.nodes, ext.edges)
 }
 

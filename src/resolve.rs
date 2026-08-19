@@ -106,6 +106,8 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "table" | "migrates" | "uses-table" => Some(format!("table:{name}")),
             // An e2e scenario -> the `route:<path>` node it opens.
             "visits" => Some(format!("route:{name}")),
+            // A route -> the page-component file it renders (extension inferred).
+            "renders" => Some(match_component_file(name, &idx.files).unwrap_or_else(|| name.to_string())),
             "calls" => resolve_call(&idx, e, name),
             "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,
@@ -172,6 +174,17 @@ fn resolve_view(name: &str, files: &HashSet<&str>) -> Option<String> {
         None => Some(first.to_string()),
         Some(_) => None, // ambiguous -> keep raw
     }
+}
+
+/// Match an already-joined component path to a file node, inferring the
+/// extension (`src/app/home/home.component` -> `...home.component.ts`). An exact
+/// path (a spec that already carried `.vue`) matches directly.
+fn match_component_file(base: &str, files: &HashSet<&str>) -> Option<String> {
+    const EXTS: [&str; 6] = [".ts", ".tsx", ".js", ".jsx", ".vue", ".mts"];
+    if files.contains(base) {
+        return Some(base.to_string());
+    }
+    EXTS.iter().map(|ext| format!("{base}{ext}")).find(|c| files.contains(c.as_str()))
 }
 
 fn resolve_call(idx: &Index, e: &RawEdge, name: &str) -> Option<String> {
