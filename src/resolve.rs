@@ -94,9 +94,12 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
                 let last = name.rsplit('\\').next().unwrap_or(name);
                 Some(Index::unique(&idx.path_by_name, last).map_or_else(|| name.to_string(), str::to_string))
             }
-            "extends" | "implements" => {
+            // Heritage + Eloquent relations resolve to a class node by unique name.
+            rel if crate::model::resolves_to_class(rel) => {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }
+            // Model/migration -> the shared `table:<name>` node that joins them.
+            "table" | "migrates" => Some(format!("table:{name}")),
             "calls" => resolve_call(&idx, e, name),
             "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,

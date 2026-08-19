@@ -13,7 +13,7 @@ mod query;
 mod resolve;
 mod schema;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -183,7 +183,13 @@ fn run(root: &str, out_dir: &str) -> Result<Summary, std::io::Error> {
     // few large parse arenas are alive at once -- the CPU win without an
     // all-cores memory spike. `PLOUF_THREADS=1` forces sequential for the
     // lowest peak RSS; higher values trade memory for speed.
-    let (nodes, mut edges) = extract_all(&root_path, &files)?;
+    let (mut nodes, mut edges) = extract_all(&root_path, &files)?;
+
+    // Collapse cross-file duplicate nodes. Only shared `table:<name>` ids recur
+    // (emitted by every model + migration of that table); everything else is
+    // already unique (ids carry the file path).
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    nodes.retain(|n| seen_ids.insert(n.id.clone()));
 
     // Translation-key usages can be numerous (a gettext app has thousands) and
     // would bloat the graph everyone loads, so they never enter `wiring.json`:

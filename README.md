@@ -81,14 +81,22 @@ plouf-rs table companies --schema schema.json
 ## Model
 
 - **Nodes**: `file`, `class`, `interface`, `trait`, `enum`, `function`,
-  `method`, `component` (one per Vue SFC). Ids are `path` for files and
-  `path#Symbol` / `path#Class.method` for the rest, each carrying a byte span
-  so `sig` / `body` slice the source without re-parsing.
+  `method`, `component` (one per Vue SFC / Angular `@Component`), `table` (one
+  per DB table name -- id `table:<name>`, the join between models and
+  migrations). Ids are `path` for files and `path#Symbol` / `path#Class.method`
+  for the rest, each carrying a byte span so `sig` / `body` slice the source
+  without re-parsing.
 - **Edges**: `contains`, `imports` (JS relative specifiers resolve to files),
   `extends` / `implements`, `calls` (resolved via a typed receiver -- `$this` /
   `this`, typed params, `new X()` / annotated locals -- then the extends chain,
   else a unique-name fallback), `includes` (Blade view references -- dotted view
   names resolve to `*.blade.php` file nodes).
+- **Eloquent** (Laravel): a `$this->belongsTo(Related::class)` (and `hasMany` /
+  `hasOne` / `belongsToMany` / `morph*` / `*Through`) yields an edge labelled by
+  the relation kind, from the model class to the related class. A model links to
+  its `table:<name>` node (explicit `$table` or the snake-case-plural
+  convention), and a migration's `Schema::create/table('x')` links to the same
+  node -- so `callers table:companies` lists the model **and** every migration.
 - **Translation keys** are not edges in `wiring.json`; they live in the
   `lang.json` sidecar as `{key: [file, ...]}` and are read by `uses`.
 

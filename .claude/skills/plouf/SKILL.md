@@ -53,6 +53,11 @@ and Angular `.html` templates.
 A bare name works when unique; otherwise the candidates are listed -- copy a full
 id (`path#Class.method`) to disambiguate.
 
+`callers` also surfaces **Eloquent relations** (`belongsTo`/`hasMany`/... edges,
+labelled by kind) and the **model <-> table <-> migration** join: run
+`plouf-rs callers table:<name>` (e.g. `table:companies`) to list the model that
+maps to a table and every migration that touches it.
+
 ## 3. DB schema
 
 Feed a JSON your project can produce (`{tables: [{name, columns}], foreignKeys:

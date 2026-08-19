@@ -139,8 +139,15 @@ pub fn body(out: &str, symbol: &str) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// List what references a symbol: every `calls`/`imports`/`extends`/`implements`
-/// edge that targets it, as `relation<TAB>source` (the blast radius).
+/// A "reference" edge for `callers`/`missing`: a call, import, heritage, Blade
+/// include, Eloquent relation, or a model/migration table link.
+fn is_reference(relation: &str) -> bool {
+    matches!(relation, "calls" | "imports" | "extends" | "implements" | "includes" | "table" | "migrates")
+        || crate::model::relation_kind(relation).is_some()
+}
+
+/// List what references a symbol: every reference edge that targets it, as
+/// `relation<TAB>source` (the blast radius).
 pub fn callers(out: &str, symbol: &str) -> Result<(), io::Error> {
     let graph = load(out)?;
     let node = resolve(&graph, symbol)?;
@@ -148,7 +155,7 @@ pub fn callers(out: &str, symbol: &str) -> Result<(), io::Error> {
         .edges
         .iter()
         .filter(|e| e.target == node.id)
-        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements" | "includes"))
+        .filter(|e| is_reference(&e.relation))
         .map(|e| format!("{}\t{}", e.relation, e.source))
         .collect();
     hits.sort();
@@ -220,7 +227,7 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
     let mut unresolved: Vec<&EdgeRec> = graph
         .edges
         .iter()
-        .filter(|e| matches!(e.relation.as_str(), "calls" | "imports" | "extends" | "implements" | "includes"))
+        .filter(|e| is_reference(&e.relation))
         .filter(|e| !ids.contains(e.target.as_str()))
         .collect();
     unresolved.sort_by(|a, b| a.target.cmp(&b.target));
