@@ -77,6 +77,10 @@ fn indexes_and_answers_every_verb() {
     let (o, _, ok) = run(&["uses", "no.such.key.anywhere", "--out", out_s]);
     assert!(ok && o.trim().is_empty(), "uses empty: {o:?}");
 
+    // bbscript e2e: a scenario visits a route node.
+    let (o, _, _) = run(&["callers", "route:/clients", "--out", out_s]);
+    assert!(o.contains("visits\t"), "bbscript visits: {o}");
+
     // missing: the gaps report runs clean.
     let (_, _, ok) = run(&["missing", "--out", out_s]);
     assert!(ok, "missing failed");

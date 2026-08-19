@@ -9,7 +9,9 @@ grepping it.
 - **JS / TS / Vue / Angular** via [oxc](https://oxc.rs) (`.vue` = its `<script>`
   blocks; Angular `@Component` classes become `component` nodes + their selector)
 - **Blade** templates (`*.blade.php`) via a hand-scanner: view references
-  (`@include`/`@extends`/`@component`/`<x-...>`) and translation keys
+  (`@include`/`@extends`/`@component`/`<x-...>`/`<livewire:...>`) and translation keys
+- **bbscript** (`*.bbscript`) Gherkin-like e2e DSL: `Feature`/`Scenario` nodes +
+  `visits` edges to the routes each scenario opens
 - **Translation keys** across all of the above (Laravel `__`/`trans`, Vue
   `$t`/`t`, Angular ngx-translate `.instant(...)` + the `| translate` pipe in
   `.html` templates, gettext), indexed to a `lang.json` sidecar
@@ -97,6 +99,9 @@ plouf-rs table companies --schema schema.json
   its `table:<name>` node (explicit `$table` or the snake-case-plural
   convention), and a migration's `Schema::create/table('x')` links to the same
   node -- so `callers table:companies` lists the model **and** every migration.
+- **e2e** (bbscript): a `scenario` -> `route:<path>` `visits` edge, so
+  `callers route:/clients` lists every scenario that opens it. (Note: files under
+  a gitignored dir are only indexed when you point `index` straight at them.)
 - **Translation keys** are not edges in `wiring.json`; they live in the
   `lang.json` sidecar as `{key: [file, ...]}` and are read by `uses`.
 

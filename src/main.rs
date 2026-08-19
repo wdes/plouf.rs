@@ -2,6 +2,7 @@
 //! source file under a root, emits a node/edge model, resolves it against a
 //! whole-tree index, and writes a `wiring.json` graph.
 
+mod bbscript;
 mod blade;
 mod format;
 mod html;

@@ -1,0 +1,9 @@
+Feature: login and session
+
+Background:
+  open /login
+  fill [name="email"] a@b.c
+
+Scenario: lands on the clients page
+  click [name="submit"]
+  seeurl ends /clients

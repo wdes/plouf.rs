@@ -104,6 +104,8 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             }
             // Model/migration/query-builder -> the shared `table:<name>` node.
             "table" | "migrates" | "uses-table" => Some(format!("table:{name}")),
+            // An e2e scenario -> the `route:<path>` node it opens.
+            "visits" => Some(format!("route:{name}")),
             "calls" => resolve_call(&idx, e, name),
             "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,
