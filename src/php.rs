@@ -199,9 +199,13 @@ fn convention_table(class: &str) -> String {
 }
 
 /// English pluralization covering the common cases (`Company` -> `Companies`,
-/// `Address` -> `Addresses`, `InvoiceLine` -> `InvoiceLines`).
+/// `Address` -> `Addresses`, `InvoiceLine` -> `InvoiceLines`, and the Latin
+/// `-is` -> `-es`: `Axis` -> `Axes`, `Analysis` -> `Analyses`).
 fn pluralize(word: &str) -> String {
     let lower = word.to_ascii_lowercase();
+    if lower.ends_with("is") && word.len() > 2 {
+        return format!("{}es", &word[..word.len() - 2]);
+    }
     if lower.ends_with('s') || lower.ends_with('x') || lower.ends_with('z') || lower.ends_with("ch") || lower.ends_with("sh") {
         return format!("{word}es");
     }
@@ -675,5 +679,8 @@ mod tests {
         assert_eq!(super::convention_table("InvoiceLine"), "invoice_lines");
         assert_eq!(super::convention_table("User"), "users");
         assert_eq!(super::convention_table("Category"), "categories");
+        // Latin -is -> -es (this bit the InventoryVariantAxis model on Mounch).
+        assert_eq!(super::convention_table("InventoryVariantAxis"), "inventory_variant_axes");
+        assert_eq!(super::convention_table("Analysis"), "analyses");
     }
 }
