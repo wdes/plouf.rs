@@ -17,14 +17,12 @@ and install it with apt (resolves dependencies and puts `plouf-rs` on your
 `PATH` at `/usr/bin/plouf-rs`):
 
 ```sh
-curl -fsSL -o /tmp/plouf-rs.deb \
-  https://github.com/wdes/plouf.rs/releases/download/v0.1.0/plouf-rs_0.1.0-1_amd64.deb
+curl -fsSL -o /tmp/plouf-rs.deb https://github.com/wdes/plouf.rs/releases/download/v0.1.0/plouf-rs_0.1.0-1_amd64.deb
 sudo apt install /tmp/plouf-rs.deb
 ```
 
-The package also drops the `/plouf` agent skill under
-`/usr/share/doc/plouf-rs/skill/` -- copy it into a project's `.claude/skills/`
-to use it.
+The package (next version) also drops the `/plouf` agent skill ([SKILL.md](.claude/skills/plouf/SKILL.md)) under
+`/usr/share/doc/plouf-rs/skill/` -- copy it into a project's `.claude/skills/` to use it.
 
 ## Build
 
@@ -39,7 +37,7 @@ Needs a recent Rust toolchain (Mago requires rustc >= 1.97).
 ## Index
 
 ```sh
-cargo run --release -- index . --out build/out
+plouf-rs index . --out build/out
 ```
 
 Writes `build/out/.graph/wiring.json` plus a tiny `stats.json`. Extraction is
@@ -51,11 +49,11 @@ values trade memory for speed.
 Run these from the directory you indexed (paths in the graph are relative):
 
 ```sh
-cargo run --release -- find CompanyController   # symbols whose id/name matches
-cargo run --release -- sig Company.getId        # a symbol's declaration line
-cargo run --release -- body Foo.convert         # full source (fn/class/enum/...)
-cargo run --release -- callers BaseRequest      # who references it (blast radius)
-cargo run --release -- missing                  # gaps: unreferenced/unresolved/empty
+plouf-rs find CompanyController   # symbols whose id/name matches
+plouf-rs sig Company.getId        # a symbol's declaration line
+plouf-rs body Foo.convert         # full source (fn/class/enum/...)
+plouf-rs callers BaseRequest      # who references it (blast radius)
+plouf-rs missing                  # gaps: unreferenced/unresolved/empty
 ```
 
 A bare name resolves when unique; otherwise the candidates are listed. `--out`
@@ -63,12 +61,12 @@ defaults to `build/plouf-rs-out`; pass the directory you indexed into.
 
 ## DB schema (optional)
 
-`plouf` reads a JSON any tool can produce -- `{tables: [{name, columns}],
+`plouf` reads a JSON **any tool can produce** -- `{tables: [{name, columns}],
 foreignKeys: [...]}` -- so a project can feed its live schema in:
 
 ```sh
-cargo run --release -- tables --schema schema.json
-cargo run --release -- table companies --schema schema.json
+plouf-rs tables --schema schema.json
+plouf-rs table companies --schema schema.json
 ```
 
 ## Model
