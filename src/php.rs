@@ -46,9 +46,9 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     Ext::run(program, &mut ctx);
     let mut nodes = ctx.nodes;
     let mut edges = ctx.edges;
-    // Migration <-> table links (`Schema::create('x')`), scanned from the raw
-    // source; joins to model `table` edges through the shared `table:` node.
-    scan_schema(rel, code, &mut nodes, &mut edges);
+    // Laravel table references (`Schema::create('x')`, `DB::table('x')`), scanned
+    // from the raw source; join to model `table` edges via the shared `table:` node.
+    crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
 }
@@ -61,7 +61,7 @@ fn bytes(v: &[u8]) -> String {
 }
 
 /// The trailing segment of a `\`-qualified name (`App\Models\User` -> `User`).
-fn dequalify(name: &str) -> String {
+pub fn dequalify(name: &str) -> String {
     name.rsplit('\\').next().unwrap_or(name).to_string()
 }
 
@@ -115,163 +115,12 @@ fn var_name(expr: &Expression) -> Option<String> {
     }
 }
 
-// --- Eloquent + migration helpers (text over source spans) -----------------
-
-/// A byte range of `src` as a `&str`, clamped to valid bounds.
+/// A byte range of `src` as a `&str`, clamped to valid bounds. Used to hand a
+/// node's source span to the Laravel helpers for text extraction.
 fn span(src: &str, start: u32, end: u32) -> &str {
     let s = (start as usize).min(src.len());
     let e = (end as usize).max(s).min(src.len());
     src.get(s..e).unwrap_or("")
-}
-
-/// The first single/double-quoted string literal in `s` (inter-quote content).
-fn first_string_literal(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let q = bytes[i];
-        if q == b'\'' || q == b'"' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] != q {
-                if bytes[j] == b'\\' {
-                    j += 1;
-                }
-                j += 1;
-            }
-            return Some(String::from_utf8_lossy(&bytes[i + 1..j.min(bytes.len())]).into_owned());
-        }
-        i += 1;
-    }
-    None
-}
-
-/// The related model named by a relation call: the `X` of the first `X::class`,
-/// else a quoted class-string first argument. De-qualified to the bare name.
-fn related_model(call_src: &str) -> Option<String> {
-    if let Some(pos) = call_src.find("::class") {
-        let before = &call_src[..pos];
-        let start = before.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '\\')).map_or(0, |i| i + 1);
-        let ident = &before[start..];
-        if !ident.is_empty() {
-            return Some(dequalify(ident));
-        }
-    }
-    first_string_literal(call_src).map(|s| dequalify(&s))
-}
-
-/// The table an Eloquent model maps to: an explicit `$table = '...'`, else the
-/// Laravel convention for a class that looks like a model, else `None`.
-fn model_table(name: &str, extends: &[String], body: &str) -> Option<String> {
-    if let Some(t) = table_from_body(body) {
-        return Some(t);
-    }
-    is_model_extends(extends).then(|| convention_table(name))
-}
-
-/// Does the class extend an Eloquent base (`Model`, `Authenticatable`, `Pivot`,
-/// or a `*Model` base class)?
-fn is_model_extends(extends: &[String]) -> bool {
-    extends
-        .iter()
-        .any(|e| matches!(e.as_str(), "Model" | "Authenticatable" | "Pivot" | "MorphPivot") || e.ends_with("Model"))
-}
-
-/// An explicit `$table = '...'` property value in the class body, if any.
-fn table_from_body(body: &str) -> Option<String> {
-    let mut from = 0;
-    while let Some(pos) = body[from..].find("$table") {
-        let at = from + pos;
-        from = at + "$table".len();
-        let rest = body[from..].trim_start();
-        if let Some(after_eq) = rest.strip_prefix('=') {
-            let after_eq = after_eq.trim_start();
-            if after_eq.starts_with('\'') || after_eq.starts_with('"') {
-                return first_string_literal(after_eq);
-            }
-        }
-    }
-    None
-}
-
-/// The Laravel table name for a model class: `snake_case(pluralize(ClassName))`.
-fn convention_table(class: &str) -> String {
-    snake_case(&pluralize(class))
-}
-
-/// English pluralization covering the common cases (`Company` -> `Companies`,
-/// `Address` -> `Addresses`, `InvoiceLine` -> `InvoiceLines`, and the Latin
-/// `-is` -> `-es`: `Axis` -> `Axes`, `Analysis` -> `Analyses`).
-fn pluralize(word: &str) -> String {
-    let lower = word.to_ascii_lowercase();
-    if lower.ends_with("is") && word.len() > 2 {
-        return format!("{}es", &word[..word.len() - 2]);
-    }
-    if lower.ends_with('s') || lower.ends_with('x') || lower.ends_with('z') || lower.ends_with("ch") || lower.ends_with("sh") {
-        return format!("{word}es");
-    }
-    if lower.ends_with('y') {
-        let prev = word.chars().rev().nth(1);
-        let is_vowel = matches!(prev, Some('a' | 'e' | 'i' | 'o' | 'u'));
-        if !is_vowel {
-            return format!("{}ies", &word[..word.len() - 1]);
-        }
-    }
-    format!("{word}s")
-}
-
-/// `PascalCase`/`camelCase` -> `snake_case` (`InvoiceLine` -> `invoice_line`).
-fn snake_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, c) in s.char_indices() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(c.to_ascii_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// Scan migration `Schema::create/table/rename/drop/dropIfExists('x', ...)` calls
-/// and emit a file -> `table:<x>` `migrates` edge (+ the shared table node) for
-/// each. This is what links a migration back to the model of the same table.
-fn scan_schema(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
-    const METHODS: [&str; 5] = ["create", "table", "rename", "drop", "dropIfExists"];
-    let bytes = code.as_bytes();
-    let mut minted: HashSet<String> = HashSet::new();
-    for m in METHODS {
-        let needle = format!("Schema::{m}");
-        let mut from = 0;
-        while let Some(pos) = code[from..].find(&needle) {
-            let at = from + pos;
-            from = at + needle.len();
-            let mut i = at + needle.len();
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            if bytes.get(i) != Some(&b'(') {
-                continue;
-            }
-            let mut k = i + 1;
-            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-                k += 1;
-            }
-            // The table is the first argument, and only when it is a string
-            // literal (a dynamic `Schema::create($name, ...)` is skipped).
-            if !matches!(bytes.get(k), Some(b'\'' | b'"')) {
-                continue;
-            }
-            if let Some(table) = first_string_literal(&code[k..]) {
-                edges.push(RawEdge::named(rel.to_string(), "migrates", table.clone()));
-                if minted.insert(table.clone()) {
-                    nodes.push(Node { id: format!("table:{table}"), name: table.clone(), kind: "table", path: rel.to_string(), start: 0, end: 0 });
-                }
-            }
-        }
-    }
 }
 
 // --- the walk --------------------------------------------------------------
@@ -430,7 +279,9 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         // Laravel snake_case-plural convention (for classes that look like models).
         let extends_names: Vec<String> =
             node.extends.as_ref().map(|e| e.types.iter().map(ident_name).collect()).unwrap_or_default();
-        if let Some(table) = model_table(&name, &extends_names, span(&ctx.source, node.start_offset(), node.end_offset())) {
+        if let Some(table) =
+            crate::laravel::model_table(&name, &extends_names, span(&ctx.source, node.start_offset(), node.end_offset()))
+        {
             ctx.link_table(&id, &table, "table");
         }
         ctx.enter_class_like(name, id);
@@ -542,9 +393,9 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         // Eloquent relation: `$this->belongsTo(Related::class)` -> a
         // model-class -> related-class edge labelled by the relation kind.
         if var_name(node.object).as_deref() == Some("$this") {
-            if let Some(kind) = crate::model::relation_kind(&m) {
+            if let Some(kind) = crate::laravel::relation_kind(&m) {
                 if let Some(class_id) = ctx.class_ids.last().cloned() {
-                    if let Some(related) = related_model(span(&ctx.source, node.start_offset(), node.end_offset())) {
+                    if let Some(related) = crate::laravel::related_model(span(&ctx.source, node.start_offset(), node.end_offset())) {
                         ctx.edges.push(RawEdge::named(class_id, kind, related));
                         return;
                     }
@@ -670,17 +521,5 @@ mod tests {
         assert!(nodes.iter().any(|n| n.kind == "table" && n.name == "companies"));
         // The column name 'name' must NOT be mistaken for a table.
         assert!(!has_named(&edges, "migrates", "name"));
-    }
-
-    #[test]
-    fn convention_pluralizer_cases() {
-        assert_eq!(super::convention_table("Company"), "companies");
-        assert_eq!(super::convention_table("Address"), "addresses");
-        assert_eq!(super::convention_table("InvoiceLine"), "invoice_lines");
-        assert_eq!(super::convention_table("User"), "users");
-        assert_eq!(super::convention_table("Category"), "categories");
-        // Latin -is -> -es, e.g. a `VariantAxis` model maps to `variant_axes`.
-        assert_eq!(super::convention_table("VariantAxis"), "variant_axes");
-        assert_eq!(super::convention_table("Analysis"), "analyses");
     }
 }

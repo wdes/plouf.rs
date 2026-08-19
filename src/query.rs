@@ -142,8 +142,10 @@ pub fn body(out: &str, symbol: &str) -> Result<(), io::Error> {
 /// A "reference" edge for `callers`/`missing`: a call, import, heritage, Blade
 /// include, Eloquent relation, or a model/migration table link.
 fn is_reference(relation: &str) -> bool {
-    matches!(relation, "calls" | "imports" | "extends" | "implements" | "includes" | "table" | "migrates")
-        || crate::model::relation_kind(relation).is_some()
+    matches!(
+        relation,
+        "calls" | "imports" | "extends" | "implements" | "includes" | "table" | "migrates" | "uses-table"
+    ) || crate::laravel::relation_kind(relation).is_some()
 }
 
 /// List what references a symbol: every reference edge that targets it, as

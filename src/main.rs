@@ -7,6 +7,7 @@ mod format;
 mod html;
 mod js;
 mod lang;
+mod laravel;
 mod model;
 mod php;
 mod query;

@@ -46,24 +46,3 @@ impl RawEdge {
         Self { source, relation: "calls", target_id: None, name: Some(name), via_member, recv_type }
     }
 }
-
-/// Eloquent relation methods: a `$this->belongsTo(Related::class)` call yields a
-/// model-class -> related-class edge, resolved by unique class name (like
-/// heritage). The method name doubles as the `&'static` edge relation so the
-/// graph records which kind of relation it is.
-pub const RELATION_KINDS: &[&str] = &[
-    "belongsTo", "hasMany", "hasOne", "belongsToMany", "morphTo", "morphMany", "morphOne",
-    "morphToMany", "morphedByMany", "hasManyThrough", "hasOneThrough",
-];
-
-/// The `&'static` relation label for an Eloquent relation method, if it is one.
-pub fn relation_kind(method: &str) -> Option<&'static str> {
-    RELATION_KINDS.iter().copied().find(|&r| r == method)
-}
-
-/// Edges whose target is a class node resolved by unique name: heritage plus the
-/// Eloquent relation kinds. `table`/`migrates` (target = a `table:` node) and the
-/// others resolve differently.
-pub fn resolves_to_class(relation: &str) -> bool {
-    matches!(relation, "extends" | "implements") || RELATION_KINDS.contains(&relation)
-}
