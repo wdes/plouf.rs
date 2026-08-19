@@ -108,6 +108,8 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "visits" => Some(format!("route:{name}")),
             // A route -> the page-component file it renders (extension inferred).
             "renders" => Some(match_component_file(name, &idx.files).unwrap_or_else(|| name.to_string())),
+            // PHP require/include -> the included file (relative to the includer).
+            "requires" => Some(resolve_relative(&e.source, name, &idx.files).unwrap_or_else(|| name.to_string())),
             "calls" => resolve_call(&idx, e, name),
             "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,

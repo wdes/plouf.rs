@@ -50,6 +50,7 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // from the raw source; join to model `table` edges via the shared `table:` node.
     crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
     scan_covers(rel, code, &mut edges);
+    scan_requires(rel, code, &mut edges);
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
 }
@@ -114,6 +115,83 @@ fn var_name(expr: &Expression) -> Option<String> {
         Expression::Variable(Variable::Direct(dv)) => Some(bytes(dv.name)),
         _ => None,
     }
+}
+
+/// Scan `require` / `require_once` / `include` / `include_once` statements and
+/// emit a `requires` edge from the file to the included file -- the PHP file
+/// dependency chain. The path is resolved relative to the including file (like a
+/// JS relative import): `__DIR__`/`dirname(__FILE__)` anchor to the file's dir;
+/// a plain `'x.php'` is treated as relative too. A dynamic path (a `$var`) or an
+/// absolute filesystem path is skipped.
+fn scan_requires(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
+    const KW: [&str; 4] = ["require_once", "require", "include_once", "include"];
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_php_ident(bytes[i]) || (i > 0 && is_php_ident(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_php_ident(bytes[i]) {
+            i += 1;
+        }
+        if !KW.contains(&&code[start..i]) {
+            continue;
+        }
+        let stmt_end = code[i..].find(';').map_or(code.len(), |e| i + e);
+        if let Some(spec) = require_spec(&code[i..stmt_end]) {
+            edges.push(RawEdge::named(rel.to_string(), "requires", spec));
+        }
+        i = stmt_end;
+    }
+}
+
+const fn is_php_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The relative specifier a `require`/`include` statement points at, or `None`
+/// for a dynamic (`$var`) or absolute-filesystem path.
+fn require_spec(stmt: &str) -> Option<String> {
+    if stmt.contains('$') {
+        return None; // dynamic base -> not statically resolvable
+    }
+    let s = first_string(stmt)?;
+    let anchored = stmt.contains("__DIR__") || stmt.contains("__FILE__") || stmt.contains("dirname");
+    let spec = if let Some(rest) = s.strip_prefix('/') {
+        if anchored {
+            format!("./{rest}") // `__DIR__ . '/../x.php'` -> `./../x.php`
+        } else {
+            return None; // absolute filesystem path, not in the repo
+        }
+    } else if s.starts_with('.') {
+        s
+    } else {
+        format!("./{s}") // `'helpers.php'` -> `./helpers.php`
+    };
+    Some(spec)
+}
+
+/// The first single/double-quoted string literal in `s` (inter-quote content).
+fn first_string(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let q = bytes[i];
+        if q == b'\'' || q == b'"' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != q {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            return Some(String::from_utf8_lossy(&bytes[i + 1..j.min(bytes.len())]).into_owned());
+        }
+        i += 1;
+    }
+    None
 }
 
 /// A byte range of `src` as a `&str`, clamped to valid bounds. Used to hand a
@@ -559,6 +637,18 @@ mod tests {
         assert!(nodes.iter().any(|n| n.kind == "table" && n.name == "companies"));
         // The column name 'name' must NOT be mistaken for a table.
         assert!(!has_named(&edges, "migrates", "name"));
+    }
+
+    #[test]
+    fn links_require_include_file_dependencies() {
+        let code = "<?php\nrequire __DIR__ . '/../bootstrap/app.php';\ninclude_once 'helpers.php';\nrequire_once dirname(__FILE__) . '/config.php';\nrequire $dynamic . '/x.php';\ninclude '/etc/abs.php';";
+        let (_, edges) = extract("app/kernel.php", code);
+        assert!(has_named(&edges, "requires", "./../bootstrap/app.php"));
+        assert!(has_named(&edges, "requires", "./helpers.php"));
+        assert!(has_named(&edges, "requires", "./config.php"));
+        // dynamic ($var) and absolute filesystem paths are skipped
+        assert!(!edges.iter().any(|e| e.relation == "requires" && e.name.as_deref() == Some("./x.php")));
+        assert!(!edges.iter().any(|e| e.relation == "requires" && e.name.as_deref().is_some_and(|n| n.contains("abs"))));
     }
 
     #[test]
