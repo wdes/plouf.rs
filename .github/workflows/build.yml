@@ -19,7 +19,7 @@ jobs:
         name: Build & test & lint
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - name: Install Rust toolchain
               # Latest stable satisfies Mago's rustc >= 1.97 requirement.
               uses: dtolnay/rust-toolchain@stable

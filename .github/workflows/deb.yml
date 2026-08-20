@@ -16,7 +16,7 @@ jobs:
         name: Build .deb
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - name: Install Rust toolchain
               # Latest stable satisfies Mago's rustc >= 1.97 requirement.
               uses: dtolnay/rust-toolchain@stable
@@ -27,7 +27,7 @@ jobs:
             - name: Build .deb
               run: cargo deb
             - name: Upload .deb
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: plouf-rs-deb-${{ github.sha }}
                   path: target/debian/*.deb

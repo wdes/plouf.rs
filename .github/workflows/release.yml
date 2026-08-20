@@ -1,0 +1,132 @@
+name: release
+
+# On a version tag, cross-compile a .deb per Debian arch, extract the raw
+# binary from each .deb, and publish everything to a DRAFT GitHub release.
+on:
+    push:
+        tags:
+            - 'v*'
+    # Manual run to exercise the cross-compile matrix without publishing a
+    # release (the release job is gated on a tag ref, so it is skipped here).
+    workflow_dispatch:
+
+# Needed to create the release and upload assets.
+permissions:
+    contents: write
+
+jobs:
+    deb:
+        name: Build .deb (${{ matrix.deb_arch }})
+        runs-on: ubuntu-latest
+        strategy:
+            # Keep going so one flaky/exotic target does not sink the rest;
+            # the release job publishes whatever succeeded.
+            fail-fast: false
+            matrix:
+                # deb_arch -> Rust target (+ cross linker; empty = native amd64).
+                include:
+                    - deb_arch: amd64
+                      target: x86_64-unknown-linux-gnu
+                      linker: ''
+                    - deb_arch: arm64
+                      target: aarch64-unknown-linux-gnu
+                      linker: aarch64-linux-gnu-gcc
+                    - deb_arch: armhf
+                      target: armv7-unknown-linux-gnueabihf
+                      linker: arm-linux-gnueabihf-gcc
+                    - deb_arch: i386
+                      target: i686-unknown-linux-gnu
+                      linker: i686-linux-gnu-gcc
+                    - deb_arch: ppc64el
+                      target: powerpc64le-unknown-linux-gnu
+                      linker: powerpc64le-linux-gnu-gcc
+                    - deb_arch: s390x
+                      target: s390x-unknown-linux-gnu
+                      linker: s390x-linux-gnu-gcc
+                    - deb_arch: riscv64
+                      target: riscv64gc-unknown-linux-gnu
+                      linker: riscv64-linux-gnu-gcc
+        steps:
+            - uses: actions/checkout@v7
+            - name: Install Rust toolchain
+              # Latest stable satisfies Mago's rustc >= 1.97 requirement.
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+            - name: Cache cargo artifacts
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ matrix.target }}
+            - name: Install cross toolchain
+              # Pulls in the <triple>-gcc cross linker for non-native archs.
+              if: ${{ matrix.linker != '' }}
+              run: sudo apt-get update && sudo apt-get install -y crossbuild-essential-${{ matrix.deb_arch }}
+            - name: Configure cargo linker
+              # cargo reads CARGO_TARGET_<TRIPLE>_LINKER (uppercase, - and . -> _).
+              if: ${{ matrix.linker != '' }}
+              run: |
+                  triple=$(echo '${{ matrix.target }}' | tr '[:lower:].-' '[:upper:]__')
+                  echo "CARGO_TARGET_${triple}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
+            - name: Install cargo-deb
+              run: cargo install cargo-deb --locked
+            - name: Build .deb
+              # cargo-deb rewrites target/release -> target/<triple>/release for the
+              # assets list, so the cross-built binary is packaged correctly.
+              run: cargo deb --target ${{ matrix.target }}
+            - name: Extract raw binary and stage assets
+              # Pull the plain executable out of the .deb so users without apt/dpkg
+              # can grab a per-arch-named binary; ship the .deb alongside it.
+              run: |
+                  mkdir -p dist
+                  deb=$(ls target/${{ matrix.target }}/debian/*.deb)
+                  dpkg-deb -x "$deb" extracted
+                  cp extracted/usr/bin/plouf-rs dist/plouf-rs-${{ matrix.deb_arch }}
+                  cp "$deb" dist/
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v7
+              with:
+                  name: dist-${{ matrix.deb_arch }}
+                  path: dist/*
+                  if-no-files-found: error
+
+    release:
+        name: Publish draft release
+        needs: deb
+        # Only on a tag push (skipped for a manual workflow_dispatch test run), and
+        # even if some archs failed (fail-fast is off) -- but not on cancel.
+        if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+        runs-on: ubuntu-latest
+        env:
+            GH_TOKEN: ${{ github.token }}
+        steps:
+            - name: Download all artifacts
+              uses: actions/download-artifact@v8
+              with:
+                  path: dist
+                  merge-multiple: true
+            - name: Create or refresh draft release
+              # Collect only files (skip any directories) so the glob never feeds
+              # a dir to gh. Idempotent: create on first run, upload+clobber after.
+              # A SemVer pre-release tag (a `-` suffix: v1.2.3-pre / -rc.1 / ...)
+              # is marked as a GitHub pre-release.
+              run: |
+                  mapfile -t assets < <(find dist -type f)
+                  prerelease=()
+                  case "${{ github.ref_name }}" in *-*) prerelease=(--prerelease) ;; esac
+                  gh release create "${{ github.ref_name }}" \
+                      --draft \
+                      "${prerelease[@]}" \
+                      --generate-notes \
+                      --title "${{ github.ref_name }}" \
+                      --repo "${{ github.repository }}" \
+                      "${assets[@]}" \
+                  || {
+                      gh release upload "${{ github.ref_name }}" \
+                          --clobber \
+                          --repo "${{ github.repository }}" \
+                          "${assets[@]}"
+                      if [ ${#prerelease[@]} -gt 0 ]; then
+                          gh release edit "${{ github.ref_name }}" \
+                              --repo "${{ github.repository }}" --prerelease
+                      fi
+                  }
