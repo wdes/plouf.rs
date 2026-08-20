@@ -160,6 +160,8 @@ fn is_reference(relation: &str) -> bool {
             | "uses-fn"
             | "defines-pipe"
             | "uses-pipe"
+            | "routes-to"
+            | "serves"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 

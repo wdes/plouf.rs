@@ -95,11 +95,15 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
                 let last = name.rsplit('\\').next().unwrap_or(name);
                 Some(Index::unique(&idx.path_by_name, last).map_or_else(|| name.to_string(), str::to_string))
             }
-            // Heritage, PHPUnit covers, + Eloquent relations resolve to a
-            // class/function node by unique name.
-            "extends" | "implements" | "covers" => {
+            // Heritage, PHPUnit covers, + a route file -> the controller class it
+            // wires, all resolve to a class/function node by unique name.
+            "extends" | "implements" | "covers" | "routes-to" => {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }
+            // Attribute routing: a `route:<path>` node -> the controller that
+            // serves it, resolved by unique class name (else kept raw -- a bare
+            // name resolves to the class, a file path to the file node).
+            "serves" => Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string)),
             rel if crate::laravel::relation_kind(rel).is_some() => {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }

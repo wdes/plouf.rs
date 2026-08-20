@@ -196,10 +196,344 @@ fn scan_static_string_arg(
     }
 }
 
+/// Recognised `Route::<x>(...)` methods that wire a controller: the HTTP verbs
+/// (an action second argument), the resource/singleton family (a controller
+/// second argument), and `controller(...)` (a group's controller).
+const ROUTE_METHODS: &[&str] = &[
+    "get", "post", "put", "patch", "delete", "any", "options", "match", "resource", "apiResource",
+    "resources", "apiResources", "singleton", "apiSingleton", "controller",
+];
+
+/// The resource-family `Route::<x>(...)` methods, whose argument list may bind
+/// several controllers at once -- the plural `resources`/`apiResources` array
+/// form `['n' => C::class, ...]`, or a singular binding `('n', C::class)`. Every
+/// `X::class` in the call is a controller, so these are scanned for ALL of them
+/// (the HTTP-verb and `controller(...)` calls name a single controller instead).
+const RESOURCE_METHODS: &[&str] =
+    &["resource", "apiResource", "resources", "apiResources", "singleton", "apiSingleton"];
+
+/// Scan a Laravel route file for controller references and emit a `routes-to`
+/// edge from the file to each wired controller CLASS (de-qualified bare name).
+/// Every controller reference in a route definition takes one of two shapes,
+/// both captured from the argument list of a recognised `Route::<x>(...)` call:
+///
+/// * a `Controller::class` constant -- in an action array `[C::class, 'method']`,
+///   a lone invokable `[C::class]`, a `Route::resource('n', C::class)` /
+///   `apiResource` / `singleton` / `apiSingleton` binding, or a
+///   `Route::controller(C::class)` group.
+/// * a string action `'C@method'` / `'App\Http\Controllers\C@method'`.
+///
+/// Only literal references are captured; a closure/arrow action or a dynamic
+/// (`$var`) reference yields nothing. The class is the target (the specific
+/// method is not resolved), later resolved by unique class name like heritage.
+pub fn scan_routes(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
+    const NEEDLE: &str = "Route::";
+    let bytes = code.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find(NEEDLE) {
+        let at = from + pos;
+        from = at + NEEDLE.len();
+        // A preceding identifier char means this is a longer name, not `Route`
+        // (a leading `\` of a fully-qualified `\...\Route::get` is fine).
+        if at > 0 {
+            let prev = bytes[at - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        // Read the method identifier that follows `Route::` and gate on it.
+        let mut m = from;
+        while m < bytes.len() && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_') {
+            m += 1;
+        }
+        if !ROUTE_METHODS.contains(&&code[from..m]) {
+            continue;
+        }
+        // The next non-space byte must open the call's argument list.
+        let mut i = m;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'(') {
+            continue;
+        }
+        let Some(close) = matching_paren(bytes, i) else { continue };
+        let args = &code[i + 1..close];
+        // The resource family may bind many controllers in one call (the plural
+        // array form especially); every other call names a single controller.
+        if RESOURCE_METHODS.contains(&&code[from..m]) {
+            for controller in every_class_const(args) {
+                push_controller_edge(rel, controller, edges);
+            }
+        } else if let Some(controller) = controller_ref(args) {
+            push_controller_edge(rel, controller, edges);
+        }
+    }
+}
+
+/// Emit a `routes-to` edge for a wired controller, skipping the base
+/// `Controller` (`app/Http/Controllers/Controller.php`): a `Controller::class`
+/// reference or a group's base is not a route action, so it is not a target.
+fn push_controller_edge(rel: &str, controller: String, edges: &mut Vec<RawEdge>) {
+    if controller == "Controller" {
+        return;
+    }
+    edges.push(RawEdge::named(rel.to_string(), "routes-to", controller));
+}
+
+/// Every `X::class` in an argument slice, de-qualified to the bare name, in
+/// source order. Used for the resource family, where one call can bind several
+/// controllers (`Route::apiResources(['a' => A::class, 'b' => B::class])`).
+fn every_class_const(args: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(pos) = args[from..].find("::class") {
+        let at = from + pos;
+        from = at + "::class".len();
+        let before = &args[..at];
+        let start = before.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '\\')).map_or(0, |i| i + 1);
+        let ident = &before[start..];
+        if !ident.is_empty() {
+            out.push(dequalify(ident));
+        }
+    }
+    out
+}
+
+/// Route-defining PHP 8 attributes on controller classes/methods. `Route` takes
+/// an explicit path (phpMyAdmin's `#[Route('/x', ['GET'])]`, Symfony's `#[Route(
+/// path: '/x', methods: [...])]`); the verb attributes (`#[Get('/x')]`,
+/// `#[Post(...)]`, ...) carry the path as their first argument. Only the BARE
+/// (unqualified) spellings are routes -- a namespaced `#[OA\Get(...)]` is an
+/// `OpenAPI` attribute, not a route, and must never be mistaken for one.
+const ROUTE_ATTRS: &[&str] =
+    &["Route", "Get", "Post", "Put", "Patch", "Delete", "Options", "Any"];
+
+/// Scan a controller file for route-defining PHP attributes and, for each, emit
+/// a `route:<path>` node (kind `route`, id `route:<path>` -- the SAME join node
+/// the e2e/router scanners emit, so `callers route:/x` reaches every surface
+/// that touches the path) plus a `serves` edge from that node to the enclosing
+/// controller. The controller is the file's class (resolved to its node by
+/// unique name), else the file itself. `route:` nodes are de-duplicated per file.
+pub fn scan_route_attributes(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    if !code.contains("#[") {
+        return;
+    }
+    let target = file_class_name(code).unwrap_or_else(|| rel.to_string());
+    let bytes = code.as_bytes();
+    let mut minted: HashSet<String> = HashSet::new();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("#[") {
+        let at = from + pos;
+        from = at + 2;
+        let Some((attr, open)) = attribute_head(bytes, code, from) else { continue };
+        if !ROUTE_ATTRS.contains(&attr) {
+            continue;
+        }
+        let Some(close) = matching_paren(bytes, open) else { continue };
+        if let Some(path) = attribute_path(&code[open + 1..close]) {
+            let route = normalize_route(&path);
+            let route_id = format!("route:{route}");
+            if minted.insert(route_id.clone()) {
+                nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
+            }
+            edges.push(RawEdge::named(route_id, "serves", target.clone()));
+        }
+    }
+}
+
+/// Parse an attribute head starting just after `#[`: an optional single leading
+/// `\`, a bare identifier, then (after optional whitespace) the `(` that opens
+/// its argument list. Returns the identifier and the `(` index. A namespaced
+/// name (`OA\Get`, `Symfony\...\Route`) is rejected -- only the unqualified
+/// spelling is a route -- as is an attribute with no argument list.
+fn attribute_head<'a>(bytes: &[u8], code: &'a str, after_hash: usize) -> Option<(&'a str, usize)> {
+    let mut i = after_hash;
+    if bytes.get(i) == Some(&b'\\') {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
+    let name = code.get(start..i)?;
+    let mut j = i;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    // A `\` before the `(` means the name was namespaced -> not a route attr.
+    match bytes.get(j) {
+        Some(b'(') => Some((name, j)),
+        _ => None,
+    }
+}
+
+/// The path a route attribute defines: an explicit `path:` named argument wins
+/// (so `#[Route(methods: [...], path: '/x')]` is read correctly), otherwise the
+/// first string literal (the positional path of `#[Route('/x', ...)]` /
+/// `#[Get('/x')]`).
+fn attribute_path(args: &str) -> Option<String> {
+    named_arg_string(args, "path").or_else(|| first_string_literal(args))
+}
+
+/// The string literal value of a `name:` named argument in an argument slice,
+/// requiring the `name` token to sit at an argument boundary (start, or after a
+/// `(`/`,`) so a substring like `xpath:` is not mistaken for `path:`.
+fn named_arg_string(args: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}:");
+    let bytes = args.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = args[from..].find(&needle) {
+        let at = from + pos;
+        from = at + needle.len();
+        let boundary = at == 0 || {
+            let prev = bytes[at - 1];
+            !(prev.is_ascii_alphanumeric() || prev == b'_')
+        };
+        if boundary {
+            return first_string_literal(&args[from..]);
+        }
+    }
+    None
+}
+
+/// The name of the file's class (its route-attribute target). The first `class`
+/// keyword followed by an identifier; `Route::class` and the like are ignored
+/// (a `::class` constant is not the `class Name {` declaration).
+fn file_class_name(code: &str) -> Option<String> {
+    let bytes = code.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("class") {
+        let at = from + pos;
+        from = at + "class".len();
+        let prev_ok = at == 0 || {
+            let p = bytes[at - 1];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
+        if !prev_ok {
+            continue;
+        }
+        let mut i = at + "class".len();
+        let ws_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == ws_start {
+            continue; // `class` must be followed by whitespace, not `::`/`(`.
+        }
+        let name_start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        if i > name_start {
+            return code.get(name_start..i).map(str::to_string);
+        }
+    }
+    None
+}
+
+/// Normalise a route path to a leading `/` (an empty path becomes `/`), matching
+/// the `route:<path>` node id convention the router/e2e scanners use.
+fn normalize_route(path: &str) -> String {
+    if path.is_empty() {
+        return "/".to_string();
+    }
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+/// The byte index of the `)` matching the `(` at `open`, skipping over
+/// single/double-quoted string contents; `None` if the source is unbalanced.
+fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut quote: Option<u8> = None;
+    let mut i = open;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+        } else {
+            match b {
+                b'\'' | b'"' => quote = Some(b),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The controller class referenced in a route call's argument list: the
+/// identifier before the first `X::class`, else the class part of the first
+/// `'Class@method'` string action. De-qualified to the bare name.
+fn controller_ref(args: &str) -> Option<String> {
+    if let Some(pos) = args.find("::class") {
+        let before = &args[..pos];
+        let start = before.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '\\')).map_or(0, |i| i + 1);
+        let ident = &before[start..];
+        if !ident.is_empty() {
+            return Some(dequalify(ident));
+        }
+    }
+    controller_from_string_action(args)
+}
+
+/// The class part of the first `'Class@method'` string action in `args`, if any.
+/// Both parts must be well-formed (class chars `[A-Za-z0-9_\\]`, method chars
+/// `[A-Za-z0-9_]`) so non-action strings (a path, an email) are not mistaken
+/// for one.
+fn controller_from_string_action(args: &str) -> Option<String> {
+    let bytes = args.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let q = bytes[i];
+        if q == b'\'' || q == b'"' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != q {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            let content = args.get(i + 1..j.min(bytes.len())).unwrap_or("");
+            if let Some((class, method)) = content.split_once('@') {
+                let class_ok = !class.is_empty() && class.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\\');
+                let method_ok = !method.is_empty() && method.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if class_ok && method_ok {
+                    return Some(dequalify(class));
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{convention_table, related_model, scan_tables};
+    use super::{convention_table, related_model, scan_route_attributes, scan_routes, scan_tables};
     use crate::model::{Node, RawEdge};
 
     #[test]
@@ -251,6 +585,99 @@ mod tests {
         super::scan_tables("f.php", "<?php myDB::table('x'); Schema::create ; DB::table  ('spaced');", &mut nodes, &mut edges);
         assert!(!edges.iter().any(|e| e.name.as_deref() == Some("x")));
         assert!(edges.iter().any(|e| e.relation == "uses-table" && e.name.as_deref() == Some("spaced")));
+    }
+
+    #[test]
+    fn scan_routes_links_route_file_to_controllers() {
+        let names = |code: &str| -> Vec<String> {
+            let mut edges: Vec<RawEdge> = Vec::new();
+            scan_routes("routes/web.php", code, &mut edges);
+            edges.iter().filter(|e| e.relation == "routes-to").filter_map(|e| e.name.clone()).collect()
+        };
+        // Action array [Controller::class, 'method'].
+        assert_eq!(names("<?php Route::get('/u', [UserController::class, 'index']);"), vec!["UserController"]);
+        // Resource with a fully-qualified controller -> de-qualified.
+        assert_eq!(
+            names("<?php Route::resource('users', \\App\\Http\\Controllers\\PhotoController::class);"),
+            vec!["PhotoController"]
+        );
+        // String action 'Controller@method'.
+        assert_eq!(names("<?php Route::get('/home', 'HomeController@show');"), vec!["HomeController"]);
+        // Group controller Route::controller(Controller::class).
+        assert_eq!(
+            names("<?php Route::controller(AdminController::class)->group(function () {});"),
+            vec!["AdminController"]
+        );
+        // Invokable single-element array [Controller::class].
+        assert_eq!(names("<?php Route::post('/x', [InvokableController::class]);"), vec!["InvokableController"]);
+        // A closure action wires no controller.
+        assert!(names("<?php Route::get('/x', fn () => 1);").is_empty());
+    }
+
+    #[test]
+    fn scan_routes_plural_resource_array_and_base_controller() {
+        let mut edges: Vec<RawEdge> = Vec::new();
+        // The PLURAL array form binds several controllers in ONE call: every
+        // `X::class` in it is a target, not just the first.
+        let code = "<?php Route::apiResources([\n    'animals' => AnimalController::class,\n    'workflows' => \\App\\Http\\Controllers\\WorkflowController::class,\n    'tours' => TourController::class,\n]);";
+        scan_routes("routes/api.php", code, &mut edges);
+        let targets: Vec<String> =
+            edges.iter().filter(|e| e.relation == "routes-to").filter_map(|e| e.name.clone()).collect();
+        assert!(targets.contains(&"AnimalController".to_string()));
+        assert!(targets.contains(&"WorkflowController".to_string()));
+        assert!(targets.contains(&"TourController".to_string()));
+        assert_eq!(targets.len(), 3);
+
+        // The singular `resources`/`apiResources` still work, and the base
+        // `Controller` (a `Controller::class` reference / group base) is skipped.
+        let mut e2: Vec<RawEdge> = Vec::new();
+        scan_routes("routes/web.php", "<?php Route::resources(['photos' => PhotoController::class]); Route::get('/x', [Controller::class, 'i']);", &mut e2);
+        let t2: Vec<String> = e2.iter().filter(|e| e.relation == "routes-to").filter_map(|e| e.name.clone()).collect();
+        assert_eq!(t2, vec!["PhotoController"]);
+        assert!(!t2.iter().any(|c| c == "Controller"));
+    }
+
+    #[test]
+    fn scan_route_attributes_positional_named_and_verbs() {
+        let attrs = |code: &str| -> (Vec<Node>, Vec<RawEdge>) {
+            let mut nodes: Vec<Node> = Vec::new();
+            let mut edges: Vec<RawEdge> = Vec::new();
+            scan_route_attributes("src/Controllers/FooController.php", code, &mut nodes, &mut edges);
+            (nodes, edges)
+        };
+        let route = |nodes: &[Node]| -> Vec<String> {
+            nodes.iter().filter(|n| n.kind == "route").map(|n| n.name.clone()).collect()
+        };
+
+        // phpMyAdmin positional form on the class, path first, methods array.
+        let (n, e) = attrs("<?php\n#[Route('/check-relations', ['GET', 'POST'])]\nfinal class CheckRelationsController {}");
+        assert_eq!(route(&n), vec!["/check-relations"]);
+        assert!(e.iter().any(|x| x.relation == "serves"
+            && x.source == "route:/check-relations"
+            && x.name.as_deref() == Some("CheckRelationsController")));
+
+        // Symfony named args, path reordered after methods -> still the path.
+        let (n, _) = attrs("<?php\n#[Route(methods: ['GET'], path: '/x/y')]\nclass FooController {}");
+        assert_eq!(route(&n), vec!["/x/y"]);
+
+        // Verb attributes; a path with no leading slash is normalised.
+        let (n, _) = attrs("<?php\n#[Get('/a')]\n#[Post('b')]\nclass FooController {}");
+        let routes = route(&n);
+        assert!(routes.contains(&"/a".to_string()));
+        assert!(routes.contains(&"/b".to_string()));
+    }
+
+    #[test]
+    fn scan_route_attributes_ignores_openapi_and_dedupes() {
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<RawEdge> = Vec::new();
+        // A namespaced `#[OA\Get(...)]` is an OpenAPI attribute, NOT a route, and
+        // the same path twice mints one node; `#[Get]` with no `()` is not a call.
+        let code = "<?php\n#[OA\\Get(path: '/openapi', methods: ['GET'])]\n#[Get('/dup')]\n#[Post('/dup')]\nclass FooController {}";
+        scan_route_attributes("src/Controllers/FooController.php", code, &mut nodes, &mut edges);
+        let routes: Vec<String> = nodes.iter().filter(|n| n.kind == "route").map(|n| n.name.clone()).collect();
+        assert_eq!(routes, vec!["/dup"]); // OpenAPI path excluded, node de-duplicated
+        assert!(!routes.iter().any(|r| r == "/openapi"));
     }
 
     #[test]

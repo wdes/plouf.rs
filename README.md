@@ -106,6 +106,14 @@ plouf-rs table companies --schema schema.json
   its `table:<name>` node (explicit `$table` or the snake-case-plural
   convention), and a migration's `Schema::create/table('x')` links to the same
   node -- so `callers table:companies` lists the model **and** every migration.
+  A Laravel route file's `Route::<verb>/match/resource/apiResource/singleton`,
+  the plural `apiResources([...])` map, `Route::controller(...)`, and every action
+  shape -- `[Ctrl::class, 'm']`, invokable `[Ctrl::class]`, `'Ns\Ctrl@m'`, and the
+  options-array `['uses' => 'Ns\Ctrl@m']` -- emit a `routes-to` edge to the
+  controller class, so `callers UserController` lists the route files that wire it
+  up. PHP attribute routing (`#[Route('/x', ...)]`, `#[Get('/x')]`, ...) emits a
+  `route:<path>` node + a `serves` edge to the controller (bare attribute names
+  only, so `#[OA\Get]` OpenAPI attributes are never mistaken for routes).
 - **e2e + routing**: a bbscript `scenario` -> `route:<path>` `visits` edge, and a
   Vue/Angular router `route:<path>` -> page-component `renders` edge (resolved to
   the `.vue`/`.ts` file). `route:<path>` is a shared join node, so
