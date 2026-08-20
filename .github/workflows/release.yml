@@ -182,9 +182,52 @@ jobs:
                   path: dist/*
                   if-no-files-found: error
 
+    e2e:
+        name: e2e (apt install + query the installed binary)
+        needs: deb
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7 # for the mock fixtures under tests/fixtures
+            - name: Download the amd64 .deb
+              uses: actions/download-artifact@v8
+              with:
+                  name: dist-amd64
+                  path: dist
+            - name: Install via apt
+              run: sudo apt-get install -y ./dist/plouf-rs_*_amd64.deb
+            - name: Assert --version matches the crate version
+              run: |
+                  ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+                  out=$(plouf-rs --version)
+                  echo "$out (expected v$ver)"
+                  echo "$out" | grep -q "plouf-rs v$ver ("
+            - name: Index mock fixtures and assert queries
+              run: |
+                  plouf-rs index tests/fixtures --out /tmp/g
+                  # find a symbol
+                  plouf-rs find Company --out /tmp/g | grep -q 'Company.php#Company'
+                  # Eloquent relation (Invoice belongsTo Company) + PHPUnit covers
+                  callers=$(plouf-rs callers Company --out /tmp/g)
+                  echo "$callers" | grep -q '^belongsTo'
+                  echo "$callers" | grep -q '^covers'
+                  # model <-> table <-> migration join node
+                  table=$(plouf-rs callers table:companies --out /tmp/g)
+                  echo "$table" | grep -q '^table'
+                  echo "$table" | grep -q '^migrates'
+                  # translation-key usage
+                  plouf-rs uses company.label --out /tmp/g | grep -q 'Company.php'
+                  # DB-schema verb
+                  plouf-rs tables --schema tests/fixtures/schema.json | grep -q '^companies$'
+                  # error path: an unknown symbol exits non-zero
+                  if plouf-rs body definitely_absent --out /tmp/g; then
+                      echo '::error::expected a non-zero exit for an unknown symbol'
+                      exit 1
+                  fi
+                  echo 'e2e: all assertions passed'
+
     release:
         name: Publish draft release
-        needs: [deb, musl]
+        needs: [deb, musl, e2e]
         # Only on a tag push (skipped for a manual workflow_dispatch test run), and
         # even if some archs failed (fail-fast is off) -- but not on cancel.
         if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
