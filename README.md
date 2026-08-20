@@ -1,9 +1,21 @@
 # plouf.rs
 
-A fast, deterministic code-graph for a polyglot repository, written in Rust. It
-walks the source tree, emits a `wiring.json` (nodes + resolved edges), and
-answers queries over it -- so tools and agents navigate a codebase instead of
-grepping it.
+A code map for developers and coding agents, written in Rust -- inspired by
+[NanoNets/Graft](https://github.com/NanoNets/Graft).
+
+plouf.rs reads a source repository and builds a map of how the code connects --
+files, classes, functions, routes, templates, and database objects. It walks the
+tree once, emits a deterministic `wiring.json` (nodes + resolved edges), and
+answers queries over it, so tools and agents navigate a codebase instead of
+grepping it. It never changes your code -- it only reads the repo and produces a
+searchable map. Ask it things like:
+
+- what calls a function (its blast radius)
+- where a database table is used (the model and every migration)
+- which routes wire up a controller
+- which templates depend on a component
+
+One graph spans backend and frontend, across languages and template formats:
 
 - **PHP** via [Mago](https://github.com/carthage-software/mago)
 - **JS / TS / Vue / Angular** via [oxc](https://oxc.rs) (`.vue` = its `<script>`
@@ -23,8 +35,6 @@ grepping it.
   `$t`/`t`, Angular ngx-translate `.instant(...)` + the `| translate` pipe in
   `.html` templates, gettext), indexed to a `lang.json` sidecar
 
-One graph spans backend and frontend.
-
 ## Install
 
 Download the `.deb` from the [releases](https://github.com/wdes/plouf.rs/releases)
@@ -32,11 +42,11 @@ and install it with apt (resolves dependencies and puts `plouf-rs` on your
 `PATH` at `/usr/bin/plouf-rs`):
 
 ```sh
-curl -fsSL -o /tmp/plouf-rs.deb https://github.com/wdes/plouf.rs/releases/download/v0.1.0/plouf-rs_0.1.0-1_amd64.deb
+curl -fsSL -o /tmp/plouf-rs.deb https://github.com/wdes/plouf.rs/releases/download/v0.2.0/plouf-rs_0.2.0-1_amd64.deb
 sudo apt install /tmp/plouf-rs.deb
 ```
 
-The package (next version) also drops the `/plouf` agent skill ([SKILL.md](.claude/skills/plouf/SKILL.md)) under
+The package also drops the `/plouf` agent skill ([SKILL.md](.claude/skills/plouf/SKILL.md)) under
 `/usr/share/doc/plouf-rs/skill/` -- copy it into a project's `.claude/skills/` to use it.
 
 Release binaries (`.deb` + the raw `plouf-rs-<arch>`) carry signed SLSA
@@ -99,9 +109,10 @@ plouf-rs table companies --schema schema.json
 - **Nodes**: `file`, `class`, `interface`, `trait`, `enum`, `function`,
   `method`, `component` (one per Vue SFC / Angular `@Component`), `table` (one
   per DB table name -- id `table:<name>`, the join between models and
-  migrations). Ids are `path` for files and `path#Symbol` / `path#Class.method`
-  for the rest, each carrying a byte span so `sig` / `body` slice the source
-  without re-parsing.
+  migrations), and `path` (a file or folder named by a `.gitattributes`
+  `export-ignore` entry). Ids are the file path for files and `path#Symbol` /
+  `path#Class.method` for the rest, each carrying a byte span so `sig` / `body`
+  slice the source without re-parsing.
 - **Edges**: `contains`, `imports` (JS relative specifiers resolve to files),
   `extends` / `implements`, `calls` (resolved via a typed receiver -- `$this` /
   `this`, typed params, `new X()` / annotated locals -- then the extends chain,
@@ -127,6 +138,12 @@ plouf-rs table companies --schema schema.json
   `callers route:/clients` lists the scenarios that open it and the page that
   serves it -- scenario -> route -> source. (Literal paths only: a router
   `/clients/:id` pattern does not match a concrete `/clients/5`.)
+- **`.gitattributes`**: each `export-ignore` entry maps to what it hides -- an
+  `export-ignores` edge from the `.gitattributes` file to a `path` node for the
+  file or folder it names, so `callers .github` lists what ignores it. An entry
+  whose target no longer exists on disk stays unresolved, so `missing` reports
+  it as a stale ignore -- the list rots as files are renamed or removed and
+  nobody updates it.
 - **Translation keys** are not edges in `wiring.json`; they live in the
   `lang.json` sidecar as `{key: [file, ...]}` and are read by `uses`.
 
