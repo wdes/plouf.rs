@@ -119,6 +119,13 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
                 let id = format!("twigfn:{name}");
                 ids.contains(id.as_str()).then_some(id)
             }
+            // An Angular class registers a custom pipe -> its `pipe:` node.
+            "defines-pipe" => Some(format!("pipe:{name}")),
+            // A template `| pipe` use -> the node, only if a class registered it.
+            "uses-pipe" => {
+                let id = format!("pipe:{name}");
+                ids.contains(id.as_str()).then_some(id)
+            }
             "calls" => resolve_call(&idx, e, name),
             "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,

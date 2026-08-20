@@ -7,7 +7,8 @@ grepping it.
 
 - **PHP** via [Mago](https://github.com/carthage-software/mago)
 - **JS / TS / Vue / Angular** via [oxc](https://oxc.rs) (`.vue` = its `<script>`
-  blocks; Angular `@Component` classes become `component` nodes + their selector)
+  blocks; Angular `@Component` classes become `component` nodes + their selector;
+  `@Pipe` custom pipes link to their `{{ x | pipe }}` template uses via a `pipe:` node)
 - **Blade** templates (`*.blade.php`) via a hand-scanner: view references
   (`@include`/`@extends`/`@component`/`<x-...>`/`<livewire:...>`) and translation keys
 - **Twig** templates (`*.twig`): `{% extends/include/embed/import %}` references,

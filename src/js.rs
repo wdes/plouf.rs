@@ -161,15 +161,21 @@ fn decorator_name(e: &Expression) -> Option<String> {
 
 /// The `selector: '...'` of an Angular `@Component({...})` decorator, if present.
 fn component_selector(c: &Class) -> Option<String> {
+    decorator_prop(c, "Component", "selector")
+}
+
+/// A string property of a named class decorator's first object argument, e.g.
+/// `@Component({ selector: '...' })` -> selector, `@Pipe({ name: '...' })` -> name.
+fn decorator_prop(c: &Class, decorator: &str, key: &str) -> Option<String> {
     c.decorators.iter().find_map(|d| {
         let Expression::CallExpression(call) = peel(&d.expression) else {
             return None;
         };
-        if callee_name(&call.callee).as_deref() != Some("Component") {
+        if callee_name(&call.callee).as_deref() != Some(decorator) {
             return None;
         }
         match call.arguments.first() {
-            Some(Argument::ObjectExpression(o)) => string_property(o, "selector"),
+            Some(Argument::ObjectExpression(o)) => string_property(o, key),
             _ => None,
         }
     })
@@ -266,6 +272,13 @@ impl JsExt {
                 self.mint(&sel_id, &selector, "component", c.span.start, c.span.end);
                 self.contains(&sel_id);
             }
+        }
+        // Angular custom pipe: `@Pipe({ name: 'foo' })` registers pipe `foo`,
+        // implemented by this class. Emit a `pipe:foo` join node + `defines-pipe`
+        // edge; a template `{{ x | foo }}` resolves to it.
+        if let Some(pipe) = decorator_prop(c, "Pipe", "name") {
+            self.mint(&format!("pipe:{pipe}"), &pipe, "pipe", c.span.start, c.span.end);
+            self.edges.push(RawEdge::named(id.clone(), "defines-pipe", pipe));
         }
         if let Some(heritage) = &c.heritage {
             if let Some(sup) = callee_name(&heritage.expression) {
@@ -534,6 +547,14 @@ mod tests {
         // A plain class stays a class.
         let (plain, _) = extract("b.ts", "b.ts", "export class Bar {}", SourceType::ts());
         assert!(names(&plain, "class").contains(&"Bar"));
+    }
+
+    #[test]
+    fn registers_angular_custom_pipe() {
+        let code = "@Pipe({ name: 'timeAgo', standalone: true })\nexport class TimeAgoPipe { transform(v: string): string { return v; } }";
+        let (nodes, edges) = extract("src/app/time-ago.pipe.ts", "time-ago.pipe.ts", code, SourceType::ts());
+        assert!(nodes.iter().any(|n| n.kind == "pipe" && n.name == "timeAgo")); // the pipe:timeAgo join node
+        assert!(edges.iter().any(|e| e.relation == "defines-pipe" && e.name.as_deref() == Some("timeAgo")));
     }
 
     #[test]
