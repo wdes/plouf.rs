@@ -39,6 +39,13 @@ sudo apt install /tmp/plouf-rs.deb
 The package (next version) also drops the `/plouf` agent skill ([SKILL.md](.claude/skills/plouf/SKILL.md)) under
 `/usr/share/doc/plouf-rs/skill/` -- copy it into a project's `.claude/skills/` to use it.
 
+Release binaries (`.deb` + the raw `plouf-rs-<arch>`) carry signed SLSA
+build-provenance attestations. Verify one before installing:
+
+```sh
+gh attestation verify /tmp/plouf-rs.deb --repo wdes/plouf.rs
+```
+
 ## Build
 
 Or build from source:

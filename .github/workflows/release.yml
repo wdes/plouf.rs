@@ -10,9 +10,12 @@ on:
     # release (the release job is gated on a tag ref, so it is skipped here).
     workflow_dispatch:
 
-# Needed to create the release and upload assets.
+# contents: create the release + upload assets. id-token + attestations:
+# sign SLSA build-provenance attestations for every binary.
 permissions:
     contents: write
+    id-token: write
+    attestations: write
 
 jobs:
     deb:
@@ -104,6 +107,12 @@ jobs:
               with:
                   path: dist
                   merge-multiple: true
+            - name: Attest build provenance
+              # Signed SLSA provenance for every .deb + raw binary; verify with
+              # `gh attestation verify <file> --repo ${{ github.repository }}`.
+              uses: actions/attest-build-provenance@v4
+              with:
+                  subject-path: 'dist/*'
             - name: Create or refresh draft release
               # Collect only files (skip any directories) so the glob never feeds
               # a dir to gh. Idempotent: create on first run, upload+clobber after.
