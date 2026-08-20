@@ -10,8 +10,10 @@ grepping it.
   blocks; Angular `@Component` classes become `component` nodes + their selector)
 - **Blade** templates (`*.blade.php`) via a hand-scanner: view references
   (`@include`/`@extends`/`@component`/`<x-...>`/`<livewire:...>`) and translation keys
-- **Twig** templates (`*.twig`): `{% extends/include/embed/import %}` references +
-  translation keys from `{% trans %}` blocks / the `|trans` filter (the
+- **Twig** templates (`*.twig`): `{% extends/include/embed/import %}` references,
+  custom-function calls (`{{ fn() }}` linked to their `new TwigFunction(...)`
+  registration via a `twigfn:` node), and translation keys from `{% trans %}`
+  blocks / the `|trans` filter (the
   [Twig i18n extension](https://github.com/phpmyadmin/twig-i18n-extension))
 - **PHP `require`/`include`** (and `*_once`) -> `requires` file-dependency edges
 - **bbscript** (`*.bbscript`) Gherkin-like e2e DSL: `Feature`/`Scenario` nodes +

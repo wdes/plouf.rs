@@ -156,6 +156,8 @@ fn is_reference(relation: &str) -> bool {
             | "visits"
             | "renders"
             | "requires"
+            | "defines-fn"
+            | "uses-fn"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 

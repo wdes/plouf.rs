@@ -27,9 +27,49 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     let mut edges = Vec::new();
     scan_tags(code, rel, &mut edges);
     scan_trans_blocks(code, rel, &mut edges);
+    scan_calls(code, rel, &mut edges);
     // The `|trans` filter (`'key'|trans`) is caught by the shared scanner.
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
+}
+
+/// Emit a `uses-fn` edge for each function call `name(...)` -- a bare identifier
+/// (not a `.method` access or a `|filter`) followed by `(`. These are candidates:
+/// only names that a PHP file actually registered as a Twig function survive
+/// resolution (built-ins and keywords are dropped), so no exclude-list is needed.
+fn scan_calls(code: &str, rel: &str, edges: &mut Vec<RawEdge>) {
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_ident(bytes[i]) || (i > 0 && is_ident(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if bytes.get(j) != Some(&b'(') {
+            continue;
+        }
+        // A `.method(` access or a `|filter(` is not a function call.
+        let mut p = start;
+        while p > 0 && bytes[p - 1].is_ascii_whitespace() {
+            p -= 1;
+        }
+        if p > 0 && (bytes[p - 1] == b'.' || bytes[p - 1] == b'|') {
+            continue;
+        }
+        edges.push(RawEdge::named(rel.to_string(), "uses-fn", code[start..i].to_string()));
+    }
+}
+
+const fn is_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Emit an `includes` edge for each template-reference tag's first quoted name.
@@ -115,6 +155,16 @@ mod tests {
         assert!(has(&edges, "uses-lang", "Hello world")); // {% trans %} block
         assert!(has(&edges, "uses-lang", "Save")); // |trans filter (via lang::scan)
         assert!(has(&edges, "uses-lang", "Spaced")); // whitespace-control block
+    }
+
+    #[test]
+    fn emits_function_call_candidates() {
+        let code = "{{ getIcon('database') }}\n{% if hasFeature('x') %}{{ user.name() }}{{ 'a'|upper() }}{% endif %}";
+        let (_, edges) = extract("t.twig", "t.twig", code);
+        assert!(has(&edges, "uses-fn", "getIcon"));
+        assert!(has(&edges, "uses-fn", "hasFeature"));
+        assert!(!has(&edges, "uses-fn", "name")); // `.name()` is a method access
+        assert!(!has(&edges, "uses-fn", "upper")); // `|upper()` is a filter
     }
 
     #[test]

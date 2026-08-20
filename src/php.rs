@@ -51,6 +51,7 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
     scan_covers(rel, code, &mut edges);
     scan_requires(rel, code, &mut edges);
+    scan_twig_functions(rel, code, &mut nodes, &mut edges);
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
 }
@@ -149,6 +150,31 @@ fn scan_requires(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
 
 const fn is_php_ident(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Scan custom Twig function/filter registrations (`new TwigFunction('name',
+/// ...)`, `new TwigFilter('name', ...)`, `->addFunction('name', ...)`,
+/// `->addFilter('name', ...)`) and emit a `twigfn:<name>` node + a `defines-fn`
+/// edge from the file. A `.twig` template's `{{ name(...) }}` call resolves to
+/// this node, so `callers twigfn:foo` lists the templates that use it and the
+/// file that registers it.
+fn scan_twig_functions(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    let mut minted: HashSet<String> = HashSet::new();
+    for needle in ["TwigFunction(", "TwigFilter(", "addFunction(", "addFilter("] {
+        let mut from = 0;
+        while let Some(pos) = code[from..].find(needle) {
+            let at = from + pos + needle.len();
+            from = at;
+            let window = &code[at..code.len().min(at + 120)];
+            if let Some(name) = first_string(window) {
+                let id = format!("twigfn:{name}");
+                if minted.insert(id.clone()) {
+                    nodes.push(Node { id, name: name.clone(), kind: "twig-function", path: rel.to_string(), start: 0, end: 0 });
+                }
+                edges.push(RawEdge::named(rel.to_string(), "defines-fn", name));
+            }
+        }
+    }
 }
 
 /// The relative specifier a `require`/`include` statement points at, or `None`
@@ -637,6 +663,16 @@ mod tests {
         assert!(nodes.iter().any(|n| n.kind == "table" && n.name == "companies"));
         // The column name 'name' must NOT be mistaken for a table.
         assert!(!has_named(&edges, "migrates", "name"));
+    }
+
+    #[test]
+    fn registers_custom_twig_functions() {
+        let code = "<?php\nclass Ext {\n  public function getFunctions() {\n    return [\n      new TwigFunction('getIcon', [Util::class, 'getIcon']),\n      new TwigFilter('formatBytes', 'format_bytes'),\n    ];\n  }\n}";
+        let (nodes, edges) = extract("app/TwigExt.php", code);
+        assert!(nodes.iter().any(|n| n.kind == "twig-function" && n.name == "getIcon"));
+        assert!(nodes.iter().any(|n| n.kind == "twig-function" && n.name == "formatBytes"));
+        assert!(has_named(&edges, "defines-fn", "getIcon"));
+        assert!(has_named(&edges, "defines-fn", "formatBytes"));
     }
 
     #[test]

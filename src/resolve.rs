@@ -80,6 +80,7 @@ impl<'a> Index<'a> {
 /// Resolve every raw edge to a deduplicated `ResolvedEdge` list.
 pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
     let idx = Index::build(nodes, edges);
+    let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     let mut out = Vec::new();
     let mut seen: HashSet<(&str, &'static str, String)> = HashSet::new();
 
@@ -110,6 +111,14 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "renders" => Some(match_component_file(name, &idx.files).unwrap_or_else(|| name.to_string())),
             // PHP require/include -> the included file (relative to the includer).
             "requires" => Some(resolve_relative(&e.source, name, &idx.files).unwrap_or_else(|| name.to_string())),
+            // A PHP file registers a custom Twig function -> its `twigfn:` node.
+            "defines-fn" => Some(format!("twigfn:{name}")),
+            // A Twig template calls one -> the node, but only if it was actually
+            // registered (drops built-ins, filters, and keyword calls).
+            "uses-fn" => {
+                let id = format!("twigfn:{name}");
+                ids.contains(id.as_str()).then_some(id)
+            }
             "calls" => resolve_call(&idx, e, name),
             "includes" => Some(resolve_view(name, &idx.files).unwrap_or_else(|| name.to_string())),
             _ => None,
