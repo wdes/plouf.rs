@@ -18,6 +18,33 @@ permissions:
     attestations: write
 
 jobs:
+    reproducible:
+        name: Reproducibility check (amd64 .deb)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - name: Install cargo-deb
+              run: cargo install cargo-deb --locked
+            - name: Build the .deb twice and compare
+              # Same commit -> identical bytes. Pin the timestamp, strip build
+              # paths, force a fresh compile of our crate between the two builds.
+              run: |
+                  export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+                  export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=. --remap-path-prefix=$HOME/.cargo=/cargo"
+                  export CARGO_INCREMENTAL=0
+                  cargo deb
+                  a="$(sha256sum target/debian/*.deb | cut -d' ' -f1)"
+                  rm -f target/debian/*.deb
+                  cargo clean -p plouf-rs
+                  cargo deb
+                  b="$(sha256sum target/debian/*.deb | cut -d' ' -f1)"
+                  echo "build 1: $a"
+                  echo "build 2: $b"
+                  if [ "$a" != "$b" ]; then echo '::error::.deb is NOT reproducible'; exit 1; fi
+                  echo "reproducible: $a"
+
     deb:
         name: Build .deb (${{ matrix.deb_arch }})
         runs-on: ubuntu-latest
@@ -51,6 +78,13 @@ jobs:
                       linker: riscv64-linux-gnu-gcc
         steps:
             - uses: actions/checkout@v7
+            - name: Reproducible build env
+              # Pin the timestamp to the commit and strip build paths so the
+              # binary + .deb come out byte-for-byte reproducible.
+              run: |
+                  echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+                  echo "RUSTFLAGS=--remap-path-prefix=$GITHUB_WORKSPACE=. --remap-path-prefix=$HOME/.cargo=/cargo" >> "$GITHUB_ENV"
+                  echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
             - name: Install Rust toolchain
               # Latest stable satisfies Mago's rustc >= 1.97 requirement.
               uses: dtolnay/rust-toolchain@stable
@@ -92,9 +126,65 @@ jobs:
                   path: dist/*
                   if-no-files-found: error
 
+    musl:
+        name: Static musl binary (${{ matrix.arch }})
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    # x86_64 links against rustc's self-contained musl (no apt).
+                    - arch: x86_64
+                      target: x86_64-unknown-linux-musl
+                      gcc: ''
+                      linker: ''
+                    - arch: aarch64
+                      target: aarch64-unknown-linux-musl
+                      gcc: gcc-aarch64-linux-gnu
+                      linker: aarch64-linux-gnu-gcc
+        steps:
+            - uses: actions/checkout@v7
+            - name: Reproducible build env
+              # Pin the timestamp to the commit and strip build paths so the
+              # binary + .deb come out byte-for-byte reproducible.
+              run: |
+                  echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+                  echo "RUSTFLAGS=--remap-path-prefix=$GITHUB_WORKSPACE=. --remap-path-prefix=$HOME/.cargo=/cargo" >> "$GITHUB_ENV"
+                  echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+            - name: Cache cargo artifacts
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ matrix.target }}
+            - name: Install cross linker
+              if: ${{ matrix.gcc != '' }}
+              run: sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }}
+            - name: Configure cargo linker
+              if: ${{ matrix.linker != '' }}
+              run: |
+                  triple=$(echo '${{ matrix.target }}' | tr '[:lower:].-' '[:upper:]__')
+                  echo "CARGO_TARGET_${triple}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
+            - name: Build static binary
+              # A fully static musl binary -- runs on any Linux (Alpine, distroless,
+              # minimal containers) with no libc dependency.
+              run: cargo build --release --target ${{ matrix.target }}
+            - name: Stage binary
+              run: |
+                  mkdir -p dist
+                  cp target/${{ matrix.target }}/release/plouf-rs dist/plouf-rs-${{ matrix.arch }}-musl
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v7
+              with:
+                  name: dist-musl-${{ matrix.arch }}
+                  path: dist/*
+                  if-no-files-found: error
+
     release:
         name: Publish draft release
-        needs: deb
+        needs: [deb, musl]
         # Only on a tag push (skipped for a manual workflow_dispatch test run), and
         # even if some archs failed (fail-fast is off) -- but not on cancel.
         if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
