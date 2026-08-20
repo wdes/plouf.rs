@@ -40,6 +40,9 @@ impl<'a> Index<'a> {
                 "file" => {
                     files.insert(&n.path);
                 }
+                // `.gitattributes` export-ignore targets: resolved by exact path
+                // id, never by name -- keep them out of the name index.
+                "path" => {}
                 _ => {
                     by_name.entry(n.name.as_str()).or_default().push(&n.id);
                     path_by_name.entry(n.name.as_str()).or_default().push(&n.path);
@@ -104,6 +107,10 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             // serves it, resolved by unique class name (else kept raw -- a bare
             // name resolves to the class, a file path to the file node).
             "serves" => Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string)),
+            // A `.gitattributes` export-ignore pattern -> the path it names (a
+            // source file node, a `path` node when the target exists, else kept
+            // raw -- unresolved, so `missing` flags it as a stale entry).
+            "export-ignores" => Some(name.to_string()),
             rel if crate::laravel::relation_kind(rel).is_some() => {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }
@@ -365,6 +372,20 @@ mod tests {
         assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Company.php#Company"));
         assert!(r.iter().any(|e| e.relation == "table" && e.target == "table:companies"));
         assert!(r.iter().any(|e| e.relation == "migrates" && e.target == "table:companies"));
+    }
+
+    #[test]
+    fn resolves_export_ignore_to_named_path() {
+        let nodes = vec![node(".github", ".github", "path")];
+        let edges = vec![
+            RawEdge::named(".gitattributes".to_string(), "export-ignores", ".github".to_string()),
+            RawEdge::named(".gitattributes".to_string(), "export-ignores", "gone.txt".to_string()),
+        ];
+        let r = resolve(&nodes, &edges);
+        let targets: Vec<&str> =
+            r.iter().filter(|e| e.relation == "export-ignores").map(|e| e.target.as_str()).collect();
+        assert!(targets.contains(&".github")); // existing path -> resolves to the node
+        assert!(targets.contains(&"gone.txt")); // stale -> kept raw, so `missing` flags it
     }
 
     #[test]

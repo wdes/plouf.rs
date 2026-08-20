@@ -5,6 +5,7 @@
 mod bbscript;
 mod blade;
 mod format;
+mod gitattributes;
 mod html;
 mod js;
 mod lang;
@@ -188,6 +189,13 @@ fn run(root: &str, out_dir: &str) -> Result<Summary, std::io::Error> {
     // all-cores memory spike. `PLOUF_THREADS=1` forces sequential for the
     // lowest peak RSS; higher values trade memory for speed.
     let (mut nodes, mut edges) = extract_all(&root_path, &files)?;
+
+    // `.gitattributes` export-ignore mapping: link each pattern to the file or
+    // folder it names. Appended before dedup so a pattern that names an existing
+    // source file collapses onto that file node rather than a redundant `path`.
+    let (ga_nodes, ga_edges) = gitattributes::scan(&root_path);
+    nodes.extend(ga_nodes);
+    edges.extend(ga_edges);
 
     // Collapse cross-file duplicate nodes. Only shared `table:<name>` ids recur
     // (emitted by every model + migration of that table); everything else is
