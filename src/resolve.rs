@@ -8,6 +8,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::model::{Node, RawEdge, ResolvedEdge};
 
+/// A Laravel local-scope method name for a query call: `active` -> `scopeActive`.
+/// Only used as a fallback after the plain method name misses, and the caller
+/// confirms `scope<Method>` exists before mapping (proof required).
+fn scope_name(method: &str) -> String {
+    let mut chars = method.chars();
+    chars.next().map_or_else(String::new, |first| format!("scope{}{}", first.to_ascii_uppercase(), chars.as_str()))
+}
+
 /// The class segment of a symbol id (`path#Class.method` -> `Class`;
 /// `path#Class` -> `Class`).
 pub fn class_of(id: &str) -> Option<&str> {
@@ -20,6 +28,7 @@ struct Index<'a> {
     by_name: HashMap<&'a str, Vec<&'a str>>,
     path_by_name: HashMap<&'a str, Vec<&'a str>>,
     owner: HashMap<&'a str, HashMap<&'a str, Vec<&'a str>>>, // class -> method -> ids
+    method_by_name: HashMap<&'a str, Vec<&'a str>>,          // method name -> ids (for scopes)
     parents: HashMap<&'a str, Vec<&'a str>>,                 // class name -> base names
     files: HashSet<&'a str>,                                 // every file node's rel path
 }
@@ -29,6 +38,7 @@ impl<'a> Index<'a> {
         let mut by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut path_by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut owner: HashMap<&str, HashMap<&str, Vec<&str>>> = HashMap::new();
+        let mut method_by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut files: HashSet<&str> = HashSet::new();
         for n in nodes {
             match n.kind {
@@ -36,6 +46,7 @@ impl<'a> Index<'a> {
                     if let Some(c) = class_of(&n.id) {
                         owner.entry(c).or_default().entry(n.name.as_str()).or_default().push(&n.id);
                     }
+                    method_by_name.entry(n.name.as_str()).or_default().push(&n.id);
                 }
                 "file" => {
                     files.insert(&n.path);
@@ -57,20 +68,29 @@ impl<'a> Index<'a> {
                 }
             }
         }
-        Self { by_name, path_by_name, owner, parents, files }
+        Self { by_name, path_by_name, owner, method_by_name, parents, files }
     }
 
     fn unique(map: &HashMap<&'a str, Vec<&'a str>>, key: &str) -> Option<&'a str> {
         map.get(key).filter(|v| v.len() == 1).map(|v| v[0])
     }
 
-    /// `recv.method`, walking the extends chain (cycle-guarded).
+    /// `recv.method`, walking the extends chain (cycle-guarded). Falls back to a
+    /// Laravel local scope (`->active()` -> `scopeActive`) but ONLY when that
+    /// `scope<Method>` method actually exists on `recv` -- never a blind rename,
+    /// so a plain call that has no matching scope is unaffected.
     fn resolve_member(&self, recv: &str, method: &str, seen: &mut HashSet<String>) -> Option<&'a str> {
         if !seen.insert(recv.to_string()) {
             return None;
         }
         if let Some(methods) = self.owner.get(recv) {
             if let Some(ids) = methods.get(method) {
+                if ids.len() == 1 {
+                    return Some(ids[0]);
+                }
+            }
+            let scoped = scope_name(method);
+            if let Some(ids) = methods.get(scoped.as_str()) {
                 if ids.len() == 1 {
                     return Some(ids[0]);
                 }
@@ -225,7 +245,11 @@ fn resolve_call(idx: &Index, e: &RawEdge, name: &str) -> Option<String> {
     e.recv_type.as_ref().map_or_else(
         || {
             if e.via_member {
-                None // no known receiver -> drop, like JS
+                // No known receiver (a query-builder chain, `Model::query()->scope()`,
+                // etc.). A Laravel scope call (`->active()`) still resolves when
+                // EXACTLY ONE `scopeActive` method exists anywhere -- proof (the
+                // scope method must exist) + uniqueness, never a blind rename.
+                Index::unique(&idx.method_by_name, &scope_name(name)).map(str::to_string)
             } else {
                 Index::unique(&idx.by_name, name).map(str::to_string)
             }
@@ -287,6 +311,20 @@ mod tests {
         let edges = vec![RawEdge::call("a.php#Foo.bar".to_string(), "unknown".to_string(), true, None)];
         let resolved = resolve(&nodes, &edges);
         assert!(resolved.iter().all(|e| e.relation != "calls"));
+    }
+
+    #[test]
+    fn resolves_laravel_scope_only_with_proof() {
+        let nodes = vec![
+            node("app/User.php#User", "User", "class"),
+            node("app/User.php#User.scopeActive", "scopeActive", "method"),
+        ];
+        // ->active() on a User receiver maps to scopeActive -- the scope exists.
+        let hit = vec![RawEdge::call("a.php#X.f".to_string(), "active".to_string(), true, Some("User".to_string()))];
+        assert_eq!(call_target(&resolve(&nodes, &hit), "a.php#X.f"), Some("app/User.php#User.scopeActive"));
+        // ->missing() has NO scopeMissing method -> dropped, never a blind rename.
+        let miss = vec![RawEdge::call("a.php#X.f".to_string(), "missing".to_string(), true, Some("User".to_string()))];
+        assert!(resolve(&nodes, &miss).iter().all(|e| e.relation != "calls"));
     }
 
     #[test]

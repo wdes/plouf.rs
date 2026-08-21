@@ -293,6 +293,9 @@ fn mint_route(rel: &str, args: &str, controller: &str, nodes: &mut Vec<Node>, ed
     }
     let Some(path) = first_string_literal(args) else { return };
     let route = normalize_route(&path);
+    if !is_route_path(&route) {
+        return;
+    }
     let route_id = format!("route:{route}");
     if minted.insert(route_id.clone()) {
         nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
@@ -378,6 +381,9 @@ pub fn scan_route_attributes(rel: &str, code: &str, nodes: &mut Vec<Node>, edges
         };
         let Some(path) = path else { continue };
         let route = normalize_route(&path);
+        if !is_route_path(&route) {
+            continue;
+        }
         let route_id = format!("route:{route}");
         if minted.insert(route_id.clone()) {
             nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
@@ -478,6 +484,12 @@ fn file_class_name(code: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A real route path, not a regex/validation pattern (`/\.pdf$/`, `/100[.,]00/`)
+/// that shares the string shape. Rejects regex anchors + character classes.
+fn is_route_path(path: &str) -> bool {
+    !path.contains(['$', '^', '[', ']'])
 }
 
 /// Normalise a route path to a leading `/` (an empty path becomes `/`), matching

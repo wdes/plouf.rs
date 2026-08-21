@@ -37,12 +37,14 @@ pub fn scan(rel: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
         // found too; each object uses its own first `path:` + component.
         if let Some((path, spec)) = route_entry(&code[i + 1..end], &aliases) {
             let route = normalize_route(&path);
-            let target = join_relative(rel, &spec);
-            let route_id = format!("route:{route}");
-            if minted.insert(route_id.clone()) {
-                nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
+            if is_route_path(&route) {
+                let target = join_relative(rel, &spec);
+                let route_id = format!("route:{route}");
+                if minted.insert(route_id.clone()) {
+                    nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
+                }
+                edges.push(RawEdge::named(route_id, "renders", target));
             }
-            edges.push(RawEdge::named(route_id, "renders", target));
         }
         i += 1;
     }
@@ -233,6 +235,13 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// A real route path, not a JS regex literal / validation pattern that happens
+/// to share the `path:` shape (`/\.pdf$/`, `/100[.,]00/`): reject regex anchors
+/// and character classes, which never appear in an actual route path.
+fn is_route_path(path: &str) -> bool {
+    !path.contains(['$', '^', '[', ']'])
 }
 
 /// Ensure a leading `/` (Angular paths are relative, `''` is the root).

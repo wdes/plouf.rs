@@ -99,6 +99,16 @@ fn source_slice(node: &NodeRec) -> Result<String, io::Error> {
     Ok(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
+/// Print one line to stdout, exiting cleanly if the reader has gone away -- a
+/// `plouf-rs find ... | head` closes the pipe, and a broken-pipe write must not
+/// panic the whole query (Rust ignores SIGPIPE, so the write errors instead).
+pub fn emit(args: std::fmt::Arguments) {
+    use std::io::Write;
+    if writeln!(std::io::stdout(), "{args}").is_err() {
+        std::process::exit(0);
+    }
+}
+
 /// List symbols whose id or name contains `term` (case-insensitive).
 pub fn find(out: &str, term: &str) -> Result<(), io::Error> {
     let graph = load(out)?;
@@ -111,7 +121,7 @@ pub fn find(out: &str, term: &str) -> Result<(), io::Error> {
         .collect();
     hits.sort_by(|a, b| a.id.cmp(&b.id));
     for n in hits {
-        println!("{}\t{}", n.kind, n.id);
+        emit(format_args!("{}\t{}", n.kind, n.id));
     }
     Ok(())
 }
@@ -122,12 +132,12 @@ pub fn signature(out: &str, symbol: &str) -> Result<(), io::Error> {
     let node = resolve(&graph, symbol)?;
     // Whole-unit kinds have no declaration line to slice; name them instead.
     if matches!(node.kind.as_str(), "component" | "file") {
-        println!("{} {}", node.kind, node.name);
+        emit(format_args!("{} {}", node.kind, node.name));
         return Ok(());
     }
     let body = source_slice(node)?;
     let cut = body.find('{').or_else(|| body.find(';')).unwrap_or(body.len());
-    println!("{}", body[..cut].trim());
+    emit(format_args!("{}", body[..cut].trim()));
     Ok(())
 }
 
@@ -135,7 +145,7 @@ pub fn signature(out: &str, symbol: &str) -> Result<(), io::Error> {
 pub fn body(out: &str, symbol: &str) -> Result<(), io::Error> {
     let graph = load(out)?;
     let node = resolve(&graph, symbol)?;
-    println!("{}", source_slice(node)?);
+    emit(format_args!("{}", source_slice(node)?));
     Ok(())
 }
 
@@ -181,7 +191,7 @@ pub fn callers(out: &str, symbol: &str) -> Result<(), io::Error> {
     hits.sort();
     hits.dedup();
     for h in hits {
-        println!("{h}");
+        emit(format_args!("{h}"));
     }
     Ok(())
 }
@@ -219,7 +229,7 @@ pub fn uses(out: &str, key: &str) -> Result<(), io::Error> {
     hits.sort();
     hits.dedup();
     for h in hits {
-        println!("{h}");
+        emit(format_args!("{h}"));
     }
     Ok(())
 }
@@ -277,12 +287,12 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
 fn report(title: &str, items: impl Iterator<Item = String>) {
     const SAMPLE: usize = 20;
     let all: Vec<String> = items.collect();
-    println!("{}: {}", title, all.len());
+    emit(format_args!("{}: {}", title, all.len()));
     for line in all.iter().take(SAMPLE) {
-        println!("  {line}");
+        emit(format_args!("  {line}"));
     }
     if all.len() > SAMPLE {
-        println!("  ... and {} more", all.len() - SAMPLE);
+        emit(format_args!("  ... and {} more", all.len() - SAMPLE));
     }
 }
 

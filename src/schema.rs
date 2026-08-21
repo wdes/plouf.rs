@@ -73,7 +73,7 @@ pub fn list_tables(path: &str) -> Result<(), io::Error> {
     let mut names: Vec<&str> = schema.tables.iter().map(|t| t.name.as_str()).collect();
     names.sort_unstable();
     for n in names {
-        println!("{n}");
+        crate::query::emit(format_args!("{n}"));
     }
     Ok(())
 }
@@ -85,24 +85,24 @@ pub fn table(path: &str, name: &str) -> Result<(), io::Error> {
         return Err(io::Error::new(io::ErrorKind::NotFound, format!("no table '{name}'")));
     };
 
-    println!("table {}", t.name);
+    crate::query::emit(format_args!("table {}", t.name));
     for c in &t.columns {
-        println!("  {}: {}", c.name, c.ty);
+        crate::query::emit(format_args!("  {}: {}", c.name, c.ty));
     }
 
     let outgoing: Vec<&ForeignKey> = schema.fks.iter().filter(|f| f.from_table == name).collect();
     if !outgoing.is_empty() {
-        println!("references:");
+        crate::query::emit(format_args!("references:"));
         for f in outgoing {
-            println!("  {} -> {}.{}", f.from_columns.join(","), f.to_table, f.to_columns.join(","));
+            crate::query::emit(format_args!("  {} -> {}.{}", f.from_columns.join(","), f.to_table, f.to_columns.join(",")));
         }
     }
 
     let incoming: Vec<&ForeignKey> = schema.fks.iter().filter(|f| f.to_table == name).collect();
     if !incoming.is_empty() {
-        println!("referenced by:");
+        crate::query::emit(format_args!("referenced by:"));
         for f in incoming {
-            println!("  {}.{} -> {}", f.from_table, f.from_columns.join(","), f.to_columns.join(","));
+            crate::query::emit(format_args!("  {}.{} -> {}", f.from_table, f.from_columns.join(","), f.to_columns.join(",")));
         }
     }
     Ok(())
