@@ -50,8 +50,8 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // from the raw source; join to model `table` edges via the shared `table:` node.
     crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
     // Laravel route files (`routes/web.php`, ...) wire controllers via `Route::`
-    // calls; link the file to each referenced controller class.
-    crate::laravel::scan_routes(rel, code, &mut edges);
+    // calls; link the file to each controller and mint a `route:<path>` node.
+    crate::laravel::scan_routes(rel, code, &mut nodes, &mut edges);
     // Attribute routing (`#[Route('/x', ...)]`, `#[Get('/x')]`, ... on a
     // controller): emit a `route:<path>` node + a `serves` edge to the class.
     crate::laravel::scan_route_attributes(rel, code, &mut nodes, &mut edges);

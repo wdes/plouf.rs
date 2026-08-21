@@ -240,7 +240,9 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
     let unreferenced: Vec<&NodeRec> = graph
         .nodes
         .iter()
-        .filter(|n| !matches!(n.kind.as_str(), "file" | "component"))
+        // `route:` join nodes point OUT to their controller (`serves`); nothing
+        // targets them unless an e2e/router does, so they are not "unreferenced".
+        .filter(|n| !matches!(n.kind.as_str(), "file" | "component" | "route"))
         .filter(|n| !referenced.contains(n.id.as_str()))
         .collect();
 

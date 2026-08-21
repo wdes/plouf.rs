@@ -40,6 +40,7 @@ plouf-rs find CompanyController          # symbols whose id/name matches
 plouf-rs sig Company.getId               # a symbol's declaration line
 plouf-rs body InvoiceConverter.convert   # full source of a fn/method/class/enum
 plouf-rs callers BaseRequest             # who references it (calls/imports/extends/includes)
+plouf-rs find route:                     # list every route (Laravel/attribute/OpenAPI)
 plouf-rs uses invoice.title              # files using a translation key (PHP/Vue/Blade)
 plouf-rs missing                         # gaps: unreferenced, unresolved, empty files
 ```
@@ -57,6 +58,13 @@ id (`path#Class.method`) to disambiguate.
 labelled by kind) and the **model <-> table <-> migration** join: run
 `plouf-rs callers table:<name>` (e.g. `table:companies`) to list the model that
 maps to a table and every migration that touches it.
+
+**Routes** are shared `route:<path>` nodes: `plouf-rs find route:` lists every
+route -- Laravel file-based (`Route::get('/x', [Ctrl, 'm'])`), PHP attribute
+(`#[Route]`/`#[Get]`), and Swagger-PHP OpenAPI (`#[OA\Post(path: '/x')]`). Run
+`plouf-rs callers <Controller>` for the route files (`routes-to`) and paths
+(`serves`) that wire it, or `plouf-rs callers route:/x` for what navigates to a
+route.
 
 ## 3. DB schema
 

@@ -226,9 +226,10 @@ const RESOURCE_METHODS: &[&str] =
 /// Only literal references are captured; a closure/arrow action or a dynamic
 /// (`$var`) reference yields nothing. The class is the target (the specific
 /// method is not resolved), later resolved by unique class name like heritage.
-pub fn scan_routes(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
+pub fn scan_routes(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
     const NEEDLE: &str = "Route::";
     let bytes = code.as_bytes();
+    let mut minted: HashSet<String> = HashSet::new();
     let mut from = 0;
     while let Some(pos) = code[from..].find(NEEDLE) {
         let at = from + pos;
@@ -246,7 +247,8 @@ pub fn scan_routes(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
         while m < bytes.len() && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_') {
             m += 1;
         }
-        if !ROUTE_METHODS.contains(&&code[from..m]) {
+        let method = &code[from..m];
+        if !ROUTE_METHODS.contains(&method) {
             continue;
         }
         // The next non-space byte must open the call's argument list.
@@ -260,15 +262,42 @@ pub fn scan_routes(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
         let Some(close) = matching_paren(bytes, i) else { continue };
         let args = &code[i + 1..close];
         // The resource family may bind many controllers in one call (the plural
-        // array form especially); every other call names a single controller.
-        if RESOURCE_METHODS.contains(&&code[from..m]) {
-            for controller in every_class_const(args) {
+        // array form especially); every other verb names a single controller.
+        if RESOURCE_METHODS.contains(&method) {
+            let controllers = every_class_const(args);
+            // A single-controller resource gets one base `route:<name>` node; the
+            // plural array form binds several controllers to distinct paths, so
+            // that path is ambiguous -- keep the controller edges only.
+            if let [only] = controllers.as_slice() {
+                mint_route(rel, args, only, nodes, edges, &mut minted);
+            }
+            for controller in controllers {
                 push_controller_edge(rel, controller, edges);
             }
         } else if let Some(controller) = controller_ref(args) {
+            mint_route(rel, args, &controller, nodes, edges, &mut minted);
             push_controller_edge(rel, controller, edges);
         }
     }
+}
+
+/// Mint the shared `route:<path>` node for a file-based route from its first
+/// string argument (`Route::get('/x', ...)` -> `route:/x`) plus a `serves` edge
+/// to its controller -- the SAME node/edge shape attribute routing emits, so
+/// `find route:` lists file-based routes too. No-op when the controller is the
+/// base `Controller`, or the first argument is not a string literal (a variable
+/// path / a closure route with no controller).
+fn mint_route(rel: &str, args: &str, controller: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>, minted: &mut HashSet<String>) {
+    if controller == "Controller" {
+        return;
+    }
+    let Some(path) = first_string_literal(args) else { return };
+    let route = normalize_route(&path);
+    let route_id = format!("route:{route}");
+    if minted.insert(route_id.clone()) {
+        nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
+    }
+    edges.push(RawEdge::named(route_id, "serves", controller.to_string()));
 }
 
 /// Emit a `routes-to` edge for a wired controller, skipping the base
@@ -303,11 +332,18 @@ fn every_class_const(args: &str) -> Vec<String> {
 /// Route-defining PHP 8 attributes on controller classes/methods. `Route` takes
 /// an explicit path (phpMyAdmin's `#[Route('/x', ['GET'])]`, Symfony's `#[Route(
 /// path: '/x', methods: [...])]`); the verb attributes (`#[Get('/x')]`,
-/// `#[Post(...)]`, ...) carry the path as their first argument. Only the BARE
-/// (unqualified) spellings are routes -- a namespaced `#[OA\Get(...)]` is an
-/// `OpenAPI` attribute, not a route, and must never be mistaken for one.
+/// `#[Post(...)]`, ...) carry the path as their first argument. These are the
+/// BARE (unqualified) spellings; a namespaced `OpenAPI` operation attribute
+/// (`#[OA\Post(path: '/x')]`) is handled separately via [`OA_ROUTE_VERBS`].
 const ROUTE_ATTRS: &[&str] =
     &["Route", "Get", "Post", "Put", "Patch", "Delete", "Options", "Any"];
+
+/// Swagger-PHP operation attributes (`#[OA\Get(path: '/x')]`, ...): a NAMESPACED
+/// verb whose `path:` argument documents a real HTTP route. Matched by trailing
+/// segment, so any alias works (`OA\Post`, `OpenApi\Attributes\Post`). The
+/// `path:` requirement keeps non-route `OpenAPI` attributes (`OA\Schema`,
+/// `OA\Response`, ...) out.
+const OA_ROUTE_VERBS: &[&str] = &["Get", "Post", "Put", "Patch", "Delete", "Head", "Options"];
 
 /// Scan a controller file for route-defining PHP attributes and, for each, emit
 /// a `route:<path>` node (kind `route`, id `route:<path>` -- the SAME join node
@@ -327,18 +363,26 @@ pub fn scan_route_attributes(rel: &str, code: &str, nodes: &mut Vec<Node>, edges
         let at = from + pos;
         from = at + 2;
         let Some((attr, open)) = attribute_head(bytes, code, from) else { continue };
-        if !ROUTE_ATTRS.contains(&attr) {
-            continue;
-        }
         let Some(close) = matching_paren(bytes, open) else { continue };
-        if let Some(path) = attribute_path(&code[open + 1..close]) {
-            let route = normalize_route(&path);
-            let route_id = format!("route:{route}");
-            if minted.insert(route_id.clone()) {
-                nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
-            }
-            edges.push(RawEdge::named(route_id, "serves", target.clone()));
+        let args = &code[open + 1..close];
+        // A bare routing attribute (`#[Route('/x')]`, `#[Get('/x')]`) takes its
+        // path positionally or as `path:`. A namespaced OpenAPI operation
+        // attribute (`#[OA\Post(path: '/x')]`) names the same route via `path:`.
+        // Anything else (`#[OA\Schema]`, a plain annotation) is not a route.
+        let path = if !attr.contains('\\') && ROUTE_ATTRS.contains(&attr) {
+            attribute_path(args)
+        } else if attr.contains('\\') && OA_ROUTE_VERBS.contains(&attr.rsplit('\\').next().unwrap_or(attr)) {
+            named_arg_string(args, "path")
+        } else {
+            None
+        };
+        let Some(path) = path else { continue };
+        let route = normalize_route(&path);
+        let route_id = format!("route:{route}");
+        if minted.insert(route_id.clone()) {
+            nodes.push(Node { id: route_id.clone(), name: route, kind: "route", path: rel.to_string(), start: 0, end: 0 });
         }
+        edges.push(RawEdge::named(route_id, "serves", target.clone()));
     }
 }
 
@@ -353,7 +397,9 @@ fn attribute_head<'a>(bytes: &[u8], code: &'a str, after_hash: usize) -> Option<
         i += 1;
     }
     let start = i;
-    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+    // A possibly-namespaced identifier: `Get`, `OA\Post`, `Symfony\...\Route`.
+    // The caller decides which namespaces (only OpenAPI verbs) count as routes.
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'\\') {
         i += 1;
     }
     if i == start {
@@ -364,7 +410,6 @@ fn attribute_head<'a>(bytes: &[u8], code: &'a str, after_hash: usize) -> Option<
     while j < bytes.len() && bytes[j].is_ascii_whitespace() {
         j += 1;
     }
-    // A `\` before the `(` means the name was namespaced -> not a route attr.
     match bytes.get(j) {
         Some(b'(') => Some((name, j)),
         _ => None,
@@ -590,8 +635,9 @@ mod tests {
     #[test]
     fn scan_routes_links_route_file_to_controllers() {
         let names = |code: &str| -> Vec<String> {
+            let mut nodes: Vec<Node> = Vec::new();
             let mut edges: Vec<RawEdge> = Vec::new();
-            scan_routes("routes/web.php", code, &mut edges);
+            scan_routes("routes/web.php", code, &mut nodes, &mut edges);
             edges.iter().filter(|e| e.relation == "routes-to").filter_map(|e| e.name.clone()).collect()
         };
         // Action array [Controller::class, 'method'].
@@ -615,12 +661,31 @@ mod tests {
     }
 
     #[test]
+    fn scan_routes_mints_route_path_nodes_and_serves() {
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<RawEdge> = Vec::new();
+        scan_routes(
+            "routes/api.php",
+            "<?php Route::get('/users', [UserController::class, 'index']); Route::post('companies', 'CompanyController@store');",
+            &mut nodes,
+            &mut edges,
+        );
+        let routes: Vec<String> = nodes.iter().filter(|n| n.kind == "route").map(|n| n.name.clone()).collect();
+        assert!(routes.contains(&"/users".to_string()));
+        assert!(routes.contains(&"/companies".to_string())); // a path with no leading slash is normalised
+        assert!(edges.iter().any(|e| e.relation == "serves"
+            && e.source == "route:/users"
+            && e.name.as_deref() == Some("UserController")));
+    }
+
+    #[test]
     fn scan_routes_plural_resource_array_and_base_controller() {
+        let mut nodes: Vec<Node> = Vec::new();
         let mut edges: Vec<RawEdge> = Vec::new();
         // The PLURAL array form binds several controllers in ONE call: every
         // `X::class` in it is a target, not just the first.
         let code = "<?php Route::apiResources([\n    'animals' => AnimalController::class,\n    'workflows' => \\App\\Http\\Controllers\\WorkflowController::class,\n    'tours' => TourController::class,\n]);";
-        scan_routes("routes/api.php", code, &mut edges);
+        scan_routes("routes/api.php", code, &mut nodes, &mut edges);
         let targets: Vec<String> =
             edges.iter().filter(|e| e.relation == "routes-to").filter_map(|e| e.name.clone()).collect();
         assert!(targets.contains(&"AnimalController".to_string()));
@@ -630,8 +695,9 @@ mod tests {
 
         // The singular `resources`/`apiResources` still work, and the base
         // `Controller` (a `Controller::class` reference / group base) is skipped.
+        let mut n2: Vec<Node> = Vec::new();
         let mut e2: Vec<RawEdge> = Vec::new();
-        scan_routes("routes/web.php", "<?php Route::resources(['photos' => PhotoController::class]); Route::get('/x', [Controller::class, 'i']);", &mut e2);
+        scan_routes("routes/web.php", "<?php Route::resources(['photos' => PhotoController::class]); Route::get('/x', [Controller::class, 'i']);", &mut n2, &mut e2);
         let t2: Vec<String> = e2.iter().filter(|e| e.relation == "routes-to").filter_map(|e| e.name.clone()).collect();
         assert_eq!(t2, vec!["PhotoController"]);
         assert!(!t2.iter().any(|c| c == "Controller"));
@@ -668,16 +734,22 @@ mod tests {
     }
 
     #[test]
-    fn scan_route_attributes_ignores_openapi_and_dedupes() {
+    fn scan_route_attributes_captures_openapi_verbs_and_dedupes() {
         let mut nodes: Vec<Node> = Vec::new();
         let mut edges: Vec<RawEdge> = Vec::new();
-        // A namespaced `#[OA\Get(...)]` is an OpenAPI attribute, NOT a route, and
-        // the same path twice mints one node; `#[Get]` with no `()` is not a call.
-        let code = "<?php\n#[OA\\Get(path: '/openapi', methods: ['GET'])]\n#[Get('/dup')]\n#[Post('/dup')]\nclass FooController {}";
+        // `#[OA\Post(path: '/x')]` is a Swagger-PHP operation attribute -> a real
+        // route; `#[OA\Schema(...)]` is not a verb, so it is ignored; the same
+        // path twice mints one node.
+        let code = "<?php\n#[OA\\Post(path: '/admin/authenticate', tags: ['auth'])]\n#[OA\\Schema(schema: 'Foo')]\n#[Get('/dup')]\n#[Post('/dup')]\nclass FooController {}";
         scan_route_attributes("src/Controllers/FooController.php", code, &mut nodes, &mut edges);
         let routes: Vec<String> = nodes.iter().filter(|n| n.kind == "route").map(|n| n.name.clone()).collect();
-        assert_eq!(routes, vec!["/dup"]); // OpenAPI path excluded, node de-duplicated
-        assert!(!routes.iter().any(|r| r == "/openapi"));
+        assert!(routes.contains(&"/admin/authenticate".to_string())); // OpenAPI verb captured
+        assert!(routes.contains(&"/dup".to_string()));
+        assert_eq!(routes.iter().filter(|r| *r == "/dup").count(), 1); // de-duplicated
+        assert!(!routes.iter().any(|r| r == "/Foo")); // OA\Schema is not a route
+        assert!(edges.iter().any(|e| e.relation == "serves"
+            && e.source == "route:/admin/authenticate"
+            && e.name.as_deref() == Some("FooController")));
     }
 
     #[test]

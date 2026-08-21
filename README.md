@@ -105,9 +105,18 @@ plouf-rs find CompanyController   # symbols whose id/name matches
 plouf-rs sig Company.getId        # a symbol's declaration line
 plouf-rs body Foo.convert         # full source (fn/class/enum/...)
 plouf-rs callers BaseRequest      # who references it (blast radius)
+plouf-rs find route:              # list every route (Laravel / attribute / OpenAPI)
+plouf-rs callers UserController   # the route files + paths that wire a controller
 plouf-rs uses invoice.title       # files using a translation key (exact, else substring)
 plouf-rs missing                  # gaps: unreferenced/unresolved/empty
 ```
+
+**Routes** are shared `route:<path>` nodes. `plouf-rs find route:` lists them
+all -- Laravel file-based (`Route::get('/x', [Ctrl, 'm'])`), PHP attribute
+(`#[Route]`/`#[Get]`), Swagger-PHP OpenAPI (`#[OA\Post(path: '/x')]`), plus
+frontend-router and e2e routes. `plouf-rs callers <Controller>` shows the route
+files (`routes-to`) and the paths (`serves`) that wire it; `plouf-rs callers
+route:/x` shows what navigates to a route.
 
 A bare name resolves when unique; otherwise the candidates are listed. `--out`
 defaults to `build/plouf-rs-out`; pass the directory you indexed into.
@@ -146,10 +155,13 @@ plouf-rs table companies --schema schema.json
   the plural `apiResources([...])` map, `Route::controller(...)`, and every action
   shape -- `[Ctrl::class, 'm']`, invokable `[Ctrl::class]`, `'Ns\Ctrl@m'`, and the
   options-array `['uses' => 'Ns\Ctrl@m']` -- emit a `routes-to` edge to the
-  controller class, so `callers UserController` lists the route files that wire it
-  up. PHP attribute routing (`#[Route('/x', ...)]`, `#[Get('/x')]`, ...) emits a
-  `route:<path>` node + a `serves` edge to the controller (bare attribute names
-  only, so `#[OA\Get]` OpenAPI attributes are never mistaken for routes).
+  controller class, and (when the call has an explicit path) a `route:<path>`
+  node + a `serves` edge, so `callers UserController` lists the route files AND
+  the paths that wire it. Attribute routing mints the same `route:<path>` node:
+  bare `#[Route('/x')]` / `#[Get('/x')]`, and the Swagger-PHP OpenAPI operation
+  attributes `#[OA\Post(path: '/x')]` (a namespaced verb with a `path:` argument;
+  non-route `#[OA\Schema]`/`#[OA\Response]` are ignored). So `find route:` lists
+  Laravel, attribute, and OpenAPI-documented routes alike.
 - **e2e + routing**: a bbscript `scenario` -> `route:<path>` `visits` edge, and a
   Vue/Angular router `route:<path>` -> page-component `renders` edge (resolved to
   the `.vue`/`.ts` file). `route:<path>` is a shared join node, so
