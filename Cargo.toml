@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["code-graph", "static-analysis", "php", "laravel", "ast"]
 categories = ["development-tools"]
 # Keep the published crate to source + docs: drop CI, agent tooling, repo meta.
-exclude = [".github", ".claude", ".gitattributes", ".gitignore"]
+exclude = [".github", ".claude", ".gitattributes", ".gitignore", "scripts"]
 
 [[bin]]
 name = "plouf-rs"
