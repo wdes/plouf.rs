@@ -56,6 +56,24 @@ build-provenance attestations. Verify one before installing:
 gh attestation verify /tmp/plouf-rs.deb --repo wdes/plouf.rs
 ```
 
+### macOS (Apple Silicon)
+
+Native binaries ship with each release for both `aarch64-apple-darwin` (Apple
+Silicon) and `x86_64-apple-darwin` (Intel). Download the one for your Mac, mark
+it executable, and -- since it is not Apple-notarized -- clear the download
+quarantine so Gatekeeper lets it run:
+
+```sh
+# Apple Silicon; on an Intel Mac swap aarch64 -> x86_64
+curl -fsSL -o plouf-rs https://github.com/wdes/plouf.rs/releases/latest/download/plouf-rs-aarch64-apple-darwin
+chmod +x plouf-rs
+xattr -dr com.apple.quarantine plouf-rs   # clear the 'unidentified developer' quarantine
+```
+
+It carries the linker's ad-hoc signature (enough to run once un-quarantined) and
+the same SLSA build-provenance attestation as every other artifact -- verify with
+`gh attestation verify plouf-rs --repo wdes/plouf.rs`.
+
 ## Build
 
 Or build from source:

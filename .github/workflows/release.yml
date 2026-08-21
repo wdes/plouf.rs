@@ -182,6 +182,47 @@ jobs:
                   path: dist/*
                   if-no-files-found: error
 
+    macos:
+        name: macOS binaries (arm64 + x86_64, cross-built on Linux)
+        # No macOS runner at all: cargo-zigbuild uses zig as the cross-linker
+        # against the macOS SDK stubs, so both Apple targets build on a free
+        # Linux runner. Works because the crate is pure Rust over libSystem --
+        # no Apple frameworks to link.
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - name: Reproducible build env
+              run: |
+                  echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+                  echo "RUSTFLAGS=--remap-path-prefix=$GITHUB_WORKSPACE=. --remap-path-prefix=$HOME/.cargo=/cargo" >> "$GITHUB_ENV"
+                  echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: aarch64-apple-darwin, x86_64-apple-darwin
+            - name: Cache cargo artifacts
+              uses: Swatinem/rust-cache@v2
+            - name: Install zig + cargo-zigbuild
+              # zig is the cross-linker cargo-zigbuild drives to target Darwin.
+              uses: mlugg/setup-zig@v2
+            - name: Install cargo-zigbuild
+              run: cargo install cargo-zigbuild --locked
+            - name: Cross-build both macOS binaries
+              run: |
+                  cargo zigbuild --release --target aarch64-apple-darwin
+                  cargo zigbuild --release --target x86_64-apple-darwin
+            - name: Stage binaries
+              run: |
+                  mkdir -p dist
+                  cp target/aarch64-apple-darwin/release/plouf-rs dist/plouf-rs-aarch64-apple-darwin
+                  cp target/x86_64-apple-darwin/release/plouf-rs dist/plouf-rs-x86_64-apple-darwin
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v7
+              with:
+                  name: dist-macos
+                  path: dist/*
+                  if-no-files-found: error
+
     e2e:
         name: e2e (apt install + query the installed binary)
         needs: deb
@@ -227,7 +268,7 @@ jobs:
 
     release:
         name: Publish draft release
-        needs: [deb, musl, e2e]
+        needs: [deb, musl, e2e, macos]
         # Only on a tag push (skipped for a manual workflow_dispatch test run), and
         # even if some archs failed (fail-fast is off) -- but not on cancel.
         if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
