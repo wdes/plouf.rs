@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn steps_without_a_route_are_ignored() {
-        let code = "Scenario: nothing navigational\n  storage remove mounch.user\n  see role:heading[name=\"Clients\"]\n";
+        let code = "Scenario: nothing navigational\n  storage remove app.user\n  see role:heading[name=\"Clients\"]\n";
         let (nodes, edges) = extract("x.bbscript", "x.bbscript", code);
         assert!(!edges.iter().any(|e| e.relation == "visits"));
         assert!(!nodes.iter().any(|n| n.kind == "route"));

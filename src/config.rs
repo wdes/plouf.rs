@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn phpstan_links_rule_classes_and_neon_includes() {
-        let neon = "includes:\n    - phpstan-baseline.neon\nrules:\n    - Mounch\\PHPStan\\Rules\\NoDynamicPropertyRule\n    - 'Mounch\\PHPStan\\Rules\\OpenApiSyncRule'";
+        let neon = "includes:\n    - phpstan-baseline.neon\nrules:\n    - Acme\\PHPStan\\Rules\\NoDynamicPropertyRule\n    - 'Acme\\PHPStan\\Rules\\OpenApiSyncRule'";
         let mut edges = Vec::new();
         scan_phpstan("phpstan.neon", "", neon, &mut edges);
         let t = targets(&edges);
