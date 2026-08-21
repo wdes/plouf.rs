@@ -41,7 +41,7 @@ const fn is_ident(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
-fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+const fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }

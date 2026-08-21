@@ -593,7 +593,7 @@ fn normalize_route(path: &str) -> String {
 
 /// The byte index of the `)` matching the `(` at `open`, skipping over
 /// single/double-quoted string contents; `None` if the source is unbalanced.
-fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+const fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0i32;
     let mut quote: Option<u8> = None;
     let mut i = open;

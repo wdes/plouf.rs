@@ -85,7 +85,7 @@ fn strip_between(src: &str, open: &str, close: &str) -> String {
 /// The byte index of the `)` matching the `(` at `open`, honouring nested parens
 /// and single/double quoted string literals (with backslash escapes). None if
 /// unbalanced.
-fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+const fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
     let mut depth: i32 = 0;
     let mut quote: Option<u8> = None;
     let mut escaped = false;

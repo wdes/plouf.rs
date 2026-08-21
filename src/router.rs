@@ -204,7 +204,7 @@ fn first_string(s: &str) -> Option<String> {
 }
 
 /// The byte index of the `}` matching the `{` at `open`, quote-aware.
-fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
+const fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0i32;
     let mut quote: Option<u8> = None;
     let mut esc = false;
