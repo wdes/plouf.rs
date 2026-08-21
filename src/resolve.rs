@@ -131,6 +131,14 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             // source file node, a `path` node when the target exists, else kept
             // raw -- unresolved, so `missing` flags it as a stale entry).
             "export-ignores" => Some(name.to_string()),
+            // A linter config -> the file/class it activates: a phpcs sniff file
+            // (an in-repo path) resolves directly; a phpstan rule class resolves
+            // by unique bare name; anything else is kept raw.
+            "configures" => Some(if idx.files.contains(name) {
+                name.to_string()
+            } else {
+                Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string)
+            }),
             rel if crate::laravel::relation_kind(rel).is_some() => {
                 Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
             }

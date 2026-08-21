@@ -173,6 +173,7 @@ fn is_reference(relation: &str) -> bool {
             | "routes-to"
             | "serves"
             | "export-ignores"
+            | "configures"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 

@@ -174,6 +174,13 @@ plouf-rs table companies --schema schema.json
   whose target no longer exists on disk stays unresolved, so `missing` reports
   it as a stale ignore -- the list rots as files are renamed or removed and
   nobody updates it.
+- **Linter configs**: `phpcs.xml` `<rule ref="./X.php">` and `phpstan.neon`
+  `rules:`/`includes:` entries emit a `configures` edge to each in-repo sniff
+  file / rule class, so `callers <Sniff>` shows the config that enables it and
+  those entry-point classes stop reading as unreferenced. A **data migration**
+  that seeds via an Eloquent model (`Software::insert([...])`, not `Schema` /
+  `DB::table`) links to the model's table (snake-case-plural convention), so
+  `callers table:x` sees the seeders, not only the schema migrations.
 - **Translation keys** are not edges in `wiring.json`; they live in the
   `lang.json` sidecar as `{key: [file, ...]}` and are read by `uses`.
 

@@ -4,6 +4,7 @@
 
 mod bbscript;
 mod blade;
+mod config;
 mod format;
 mod gitattributes;
 mod html;
@@ -196,6 +197,10 @@ fn run(root: &str, out_dir: &str) -> Result<Summary, std::io::Error> {
     let (ga_nodes, ga_edges) = gitattributes::scan(&root_path);
     nodes.extend(ga_nodes);
     edges.extend(ga_edges);
+
+    // Linter configs (phpcs.xml / phpstan.neon) -> the sniff/rule files they
+    // activate, so those entry-point classes stop reading as unreferenced.
+    edges.extend(config::scan(&root_path));
 
     // Collapse cross-file duplicate nodes. Only shared `table:<name>` ids recur
     // (emitted by every model + migration of that table); everything else is

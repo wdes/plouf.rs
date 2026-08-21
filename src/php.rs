@@ -49,6 +49,9 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // Laravel table references (`Schema::create('x')`, `DB::table('x')`), scanned
     // from the raw source; join to model `table` edges via the shared `table:` node.
     crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
+    // Data migrations write rows via an Eloquent model (not Schema/DB::table);
+    // link them to the model's table so `callers table:x` sees the seeders.
+    crate::laravel::scan_data_migrations(rel, code, &mut edges);
     // Laravel route files (`routes/web.php`, ...) wire controllers via `Route::`
     // calls; link the file to each controller and mint a `route:<path>` node.
     crate::laravel::scan_routes(rel, code, &mut nodes, &mut edges);

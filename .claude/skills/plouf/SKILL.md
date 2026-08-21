@@ -15,6 +15,10 @@ and JS/TS/Vue (oxc) -- then answers queries over it. Prefer it over blind
 grepping: it resolves calls, heritage, and imports, and slices exact source
 spans, across both languages in one index.
 
+Invoked as `/plouf` with no target: ensure the index exists (run step 1 if
+`build/plouf-rs-out` is absent), then print a `missing` overview and the example
+queries below -- do not just ask what to run.
+
 ## 0. Setup (once) -- if `plouf-rs` is not installed
 
 Download the `.deb` from the releases and install it:

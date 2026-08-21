@@ -303,6 +303,92 @@ fn mint_route(rel: &str, args: &str, controller: &str, nodes: &mut Vec<Node>, ed
     edges.push(RawEdge::named(route_id, "serves", controller.to_string()));
 }
 
+/// Data-writing static methods on an Eloquent model inside a migration.
+const DATA_METHODS: &[&str] = &[
+    "insert", "create", "update", "updateOrCreate", "upsert", "insertOrIgnore", "firstOrCreate",
+    "truncate", "forceDelete", "delete", "where", "whereIn",
+];
+
+/// Common Laravel facades -- a static call on one of these in a migration is
+/// infrastructure (`DB::table`, `Log::info`, ...), never a model write.
+const FACADES: &[&str] = &[
+    "DB", "Schema", "Route", "Cache", "Log", "Config", "Storage", "Artisan", "Event", "Mail", "Queue",
+    "Redis", "Session", "Auth", "Gate", "App", "Str", "Arr", "Hash", "File", "URL", "Validator", "View",
+];
+
+/// A DATA migration writes rows through an Eloquent model
+/// (`<Model>::insert([...])`, `::create(...)`, `::whereIn(...)->forceDelete()`)
+/// instead of `Schema::create`/`DB::table`, so the plain table scans miss it.
+/// When the model is imported, link the migration to the model's table (the
+/// snake-case-plural convention) with a `uses-table` edge, so `callers table:<x>`
+/// sees the seeders too. Convention-based: a model with an explicit,
+/// non-conventional `$table` is not followed here.
+pub fn scan_data_migrations(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
+    if !rel.contains("migrations/") {
+        return;
+    }
+    let imported = imported_short_names(code);
+    if imported.is_empty() {
+        return;
+    }
+    let bytes = code.as_bytes();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("::") {
+        let at = from + pos;
+        from = at + 2;
+        // The identifier immediately before `::`.
+        let start =
+            code[..at].rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '\\')).map_or(0, |i| i + 1);
+        let class = dequalify(&code[start..at]);
+        if class.is_empty() || FACADES.contains(&class.as_str()) || !imported.contains(&class) {
+            continue;
+        }
+        // The method immediately after `::`.
+        let mut m = at + 2;
+        while m < bytes.len() && (bytes[m].is_ascii_alphanumeric() || bytes[m] == b'_') {
+            m += 1;
+        }
+        if !DATA_METHODS.contains(&&code[at + 2..m]) {
+            continue;
+        }
+        let table = convention_table(&class);
+        if seen.insert(table.clone()) {
+            edges.push(RawEdge::named(rel.to_string(), "uses-table", table));
+        }
+    }
+}
+
+/// Short (unqualified) class names brought in by `use ...\Name;` statements.
+fn imported_short_names(code: &str) -> HashSet<String> {
+    let bytes = code.as_bytes();
+    let mut out = HashSet::new();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("use ") {
+        let at = from + pos;
+        from = at + 4;
+        // `use ` must sit at a statement boundary, not inside another word.
+        if at > 0 && !matches!(bytes[at - 1], b'\n' | b'\r' | b';' | b'\t' | b' ') {
+            continue;
+        }
+        let stmt = &code[at + 4..];
+        let stmt = &stmt[..stmt.find([';', '\n']).unwrap_or(stmt.len())];
+        let named = stmt.rsplit(" as ").next().unwrap_or(stmt).trim();
+        let short: String = named
+            .rsplit('\\')
+            .next()
+            .unwrap_or(named)
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !short.is_empty() {
+            out.insert(short);
+        }
+    }
+    out
+}
+
 /// Emit a `routes-to` edge for a wired controller, skipping the base
 /// `Controller` (`app/Http/Controllers/Controller.php`): a `Controller::class`
 /// reference or a group's base is not a route action, so it is not a target.
@@ -762,6 +848,21 @@ mod tests {
         assert!(edges.iter().any(|e| e.relation == "serves"
             && e.source == "route:/admin/authenticate"
             && e.name.as_deref() == Some("FooController")));
+    }
+
+    #[test]
+    fn scan_data_migrations_links_model_writes_to_table() {
+        let code = "<?php\nuse App\\Models\\Software;\nreturn new class extends Migration {\n  public function up() { Software::insert([['name' => 'iOS']]); DB::table('other')->insert([]); }\n  public function down() { Software::whereIn('name', ['iOS'])->forceDelete(); }\n};";
+        let mut edges: Vec<RawEdge> = Vec::new();
+        super::scan_data_migrations("database/migrations/2022_01_01_add_data_to_softwares.php", code, &mut edges);
+        // Software::insert / ::whereIn -> uses-table softwares (convention), once.
+        let tables: Vec<&str> =
+            edges.iter().filter(|e| e.relation == "uses-table").filter_map(|e| e.name.as_deref()).collect();
+        assert_eq!(tables, vec!["softwares"]); // DB:: facade ignored; de-duplicated
+        // A non-migration path is a no-op (the guard is the migrations/ prefix).
+        let mut e2: Vec<RawEdge> = Vec::new();
+        super::scan_data_migrations("app/Services/Foo.php", code, &mut e2);
+        assert!(e2.is_empty());
     }
 
     #[test]
