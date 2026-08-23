@@ -235,6 +235,10 @@ pub fn uses(out: &str, key: &str) -> Result<(), io::Error> {
     Ok(())
 }
 
+/// File extensions whose nodes legitimately hold no code symbols, so an empty
+/// one is not a gap: templates and non-code assets.
+const NO_SYMBOL_EXTS: [&str; 6] = ["html", "json", "css", "scss", "sass", "svg"];
+
 /// Report graph gaps: symbols nothing references, edges that never resolved to a
 /// node, and files that parsed to nothing.
 pub fn missing(out: &str) -> Result<(), io::Error> {
@@ -274,6 +278,10 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             "extends" | "implements" => false,
             _ => true,
         })
+        // A target under `vendor/` is an out-of-repo dependency (Composer's
+        // gitignored tree) -- a `require vendor/autoload.php` / a phpstan
+        // `includes:` of a vendor extension, not a gap.
+        .filter(|e| !e.target.contains("vendor/"))
         .collect();
     unresolved.sort_by(|a, b| a.target.cmp(&b.target));
 
@@ -283,10 +291,10 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         .nodes
         .iter()
         .filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str()))
-        // Template files (HTML / Blade) legitimately hold no code symbols -- not a gap.
+        // Template + asset files legitimately hold no code symbols -- not a gap.
         .filter(|n| {
-            !Path::new(&n.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("html"))
-                && !n.path.ends_with(".blade.php")
+            let ext = Path::new(&n.path).extension().and_then(|e| e.to_str()).unwrap_or("");
+            !NO_SYMBOL_EXTS.iter().any(|a| a.eq_ignore_ascii_case(ext)) && !n.path.ends_with(".blade.php")
         })
         .collect();
 

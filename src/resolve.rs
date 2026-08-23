@@ -31,6 +31,7 @@ struct Index<'a> {
     method_by_name: HashMap<&'a str, Vec<&'a str>>,          // method name -> ids (for scopes)
     parents: HashMap<&'a str, Vec<&'a str>>,                 // class name -> base names
     files: HashSet<&'a str>,                                 // every file node's rel path
+    uses: HashMap<&'a str, HashMap<&'a str, &'a str>>,       // file -> (short name -> FQCN)
 }
 
 impl<'a> Index<'a> {
@@ -61,18 +62,59 @@ impl<'a> Index<'a> {
             }
         }
         let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut uses: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
         for e in edges {
             if e.relation == "extends" {
                 if let (Some(own), Some(p)) = (e.source.split('#').nth(1), &e.name) {
                     parents.entry(own).or_default().push(p.as_str());
                 }
             }
+            // A PHP `use A\B\Foo;` -> the file's short-name -> FQCN map, used to
+            // disambiguate a class reference when the short name collides.
+            if e.relation == "imports" {
+                if let Some(fqcn) = &e.name {
+                    if fqcn.contains('\\') {
+                        let short = fqcn.rsplit('\\').next().unwrap_or(fqcn);
+                        uses.entry(e.source.as_str()).or_default().insert(short, fqcn.as_str());
+                    }
+                }
+            }
         }
-        Self { by_name, path_by_name, owner, method_by_name, parents, files }
+        Self { by_name, path_by_name, owner, method_by_name, parents, files, uses }
     }
 
     fn unique(map: &HashMap<&'a str, Vec<&'a str>>, key: &str) -> Option<&'a str> {
         map.get(key).filter(|v| v.len() == 1).map(|v| v[0])
+    }
+
+    /// A bare class name referenced from `source` -> a node id. A unique name
+    /// wins; on a short-name collision the source file's `use` import gives the
+    /// FQCN, and the candidate whose path matches the namespace is chosen --
+    /// `App\Models\Address` picks `app/Models/Address.php`, not the
+    /// `OpenApi\Schemas\Address` twin. None when it cannot be pinned down.
+    fn resolve_named(&self, source: &str, name: &str) -> Option<&'a str> {
+        let candidates = self.by_name.get(name)?;
+        if let [only] = candidates.as_slice() {
+            return Some(only);
+        }
+        // A relation/heritage edge is sourced from the class node (`file#Class`);
+        // `use` imports and namespaces key off the file.
+        let file = source.split('#').next().unwrap_or(source);
+        // 1. An explicit `use A\B\Name` wins: the candidate whose path matches
+        //    that FQCN (`App\Models\Address` -> `app/Models/Address.php`).
+        if let Some(fqcn) = self.uses.get(file).and_then(|m| m.get(name)) {
+            let want = format!("{}.php", fqcn.replace('\\', "/").to_lowercase());
+            if let Some(hit) =
+                candidates.iter().copied().find(|id| id.split('#').next().unwrap_or(id).to_lowercase().ends_with(&want))
+            {
+                return Some(hit);
+            }
+        }
+        // 2. No import -> a same-namespace reference: PHP resolves a bare name in
+        //    the current namespace first, so prefer the candidate in the SAME
+        //    directory as the referencing file.
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+        candidates.iter().copied().find(|id| id.split('#').next().unwrap_or(id).rsplit_once('/').map_or("", |(d, _)| d) == dir)
     }
 
     /// `recv.method`, walking the extends chain (cycle-guarded). Falls back to a
@@ -121,12 +163,12 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             // Heritage, PHPUnit covers, + a route file -> the controller class it
             // wires, all resolve to a class/function node by unique name.
             "extends" | "implements" | "covers" | "routes-to" => {
-                Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
+                Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
             }
             // Attribute routing: a `route:<path>` node -> the controller that
             // serves it, resolved by unique class name (else kept raw -- a bare
             // name resolves to the class, a file path to the file node).
-            "serves" => Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string)),
+            "serves" => Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string)),
             // A `.gitattributes` export-ignore pattern -> the path it names (a
             // source file node, a `path` node when the target exists, else kept
             // raw -- unresolved, so `missing` flags it as a stale entry).
@@ -140,7 +182,13 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
                 Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string)
             }),
             rel if crate::laravel::relation_kind(rel).is_some() => {
-                Some(Index::unique(&idx.by_name, name).map_or_else(|| name.to_string(), str::to_string))
+                if matches!(name, "self" | "static") {
+                    // A self-referential relation (`belongsTo(self::class)`) points
+                    // back at the model that declares it (the edge's own source).
+                    Some(e.source.clone())
+                } else {
+                    Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
+                }
             }
             // Model/migration/query-builder -> the shared `table:<name>` node.
             "table" | "migrates" | "uses-table" => Some(format!("table:{name}")),
@@ -444,6 +492,44 @@ mod tests {
     }
 
     #[test]
+    fn resolves_self_referential_relation_to_its_model() {
+        let nodes = vec![node("app/Models/Step.php#Step", "Step", "class")];
+        // `belongsTo(self::class)` on Step points back at Step.
+        let edges = vec![RawEdge::named("app/Models/Step.php#Step".to_string(), "belongsTo", "self".to_string())];
+        let r = resolve(&nodes, &edges);
+        assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Models/Step.php#Step"));
+    }
+
+    #[test]
+    fn fqcn_use_disambiguates_short_name_collision() {
+        let nodes = vec![
+            node("app/Models/Address.php#Address", "Address", "class"),
+            node("app/OpenApi/Schemas/Address.php#Address", "Address", "class"),
+            node("app/Models/Company.php#Company", "Company", "class"),
+        ];
+        // The importing file's `use App\Models\Address` picks the model, not the
+        // OpenAPI-schema twin, for its `belongsTo(Address::class)`.
+        let edges = vec![
+            // `use` imports are file-sourced; the relation is class-node-sourced.
+            RawEdge::named("app/Models/Company.php".to_string(), "imports", "App\\Models\\Address".to_string()),
+            RawEdge::named("app/Models/Company.php#Company".to_string(), "belongsTo", "Address".to_string()),
+        ];
+        let r = resolve(&nodes, &edges);
+        assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Models/Address.php#Address"));
+
+        // Same-namespace reference with NO use import: the candidate in the same
+        // directory as the referencing file wins (current namespace resolved first).
+        let edges3 = vec![RawEdge::named("app/Models/Contact.php#Contact".to_string(), "belongsTo", "Address".to_string())];
+        let r3 = resolve(&nodes, &edges3);
+        assert!(r3.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Models/Address.php#Address"));
+
+        // Neither a use nor a same-dir candidate: an ambiguous name stays raw.
+        let edges2 = vec![RawEdge::named("app/x.php#X".to_string(), "belongsTo", "Address".to_string())];
+        let r2 = resolve(&nodes, &edges2);
+        assert!(r2.iter().any(|e| e.relation == "belongsTo" && e.target == "Address"));
+    }
+
+    #[test]
     fn resolves_export_ignore_to_named_path() {
         let nodes = vec![node(".github", ".github", "path")];
         let edges = vec![
@@ -455,6 +541,22 @@ mod tests {
             r.iter().filter(|e| e.relation == "export-ignores").map(|e| e.target.as_str()).collect();
         assert!(targets.contains(&".github")); // existing path -> resolves to the node
         assert!(targets.contains(&"gone.txt")); // stale -> kept raw, so `missing` flags it
+    }
+
+    #[test]
+    fn resolves_configures_to_sniff_file_and_rule_class() {
+        let nodes = vec![
+            node("standard/FooSniff.php", "FooSniff.php", "file"),
+            node("standard/BarRule.php#BarRule", "BarRule", "class"),
+        ];
+        let edges = vec![
+            // a phpcs sniff ref (an in-repo path) and a phpstan rule class (by name)
+            RawEdge::named("phpcs.xml".to_string(), "configures", "standard/FooSniff.php".to_string()),
+            RawEdge::named("phpstan.neon".to_string(), "configures", "BarRule".to_string()),
+        ];
+        let r = resolve(&nodes, &edges);
+        assert!(r.iter().any(|e| e.relation == "configures" && e.target == "standard/FooSniff.php"));
+        assert!(r.iter().any(|e| e.relation == "configures" && e.target == "standard/BarRule.php#BarRule"));
     }
 
     #[test]

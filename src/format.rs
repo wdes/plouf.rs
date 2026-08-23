@@ -26,12 +26,30 @@ const FORMATS: &[&dyn Format] = &[
     &crate::html::Html,
     &crate::twig::Twig,
     &crate::bbscript::BbScript,
+    &Asset,
 ];
+
+/// Non-code assets (`*.json`, `*.css`, ...): a bare `file` node with no symbols,
+/// just so a relative `import './x.json'` / `./styles.css` has a target to link
+/// to. Runs last, only for files no code format claimed.
+struct Asset;
+
+impl Format for Asset {
+    fn matches(&self, _base: &str, ext: &str) -> bool {
+        matches!(ext, "json" | "css" | "scss" | "sass" | "svg")
+    }
+
+    fn extract(&self, rel: &str, base: &str, _code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+        (vec![Node { id: rel.to_string(), name: base.to_string(), kind: "file", path: rel.to_string(), start: 0, end: 0 }], Vec::new())
+    }
+}
 
 /// Extensions collected for extraction -- the union across formats, used as the
 /// directory-walk filter.
-pub const SOURCE_EXTS: [&str; 13] =
-    ["php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html", "twig", "bbscript"];
+pub const SOURCE_EXTS: [&str; 18] = [
+    "php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html", "twig", "bbscript",
+    "json", "css", "scss", "sass", "svg",
+];
 
 /// Read one file and route it to the first matching format. Returns empty on a
 /// read error or when no format matches.
@@ -60,6 +78,18 @@ mod tests {
     fn unreadable_file_yields_empty() {
         let (nodes, edges) = super::extract(Path::new("/"), Path::new("/no/such/plouf/file.php"));
         assert!(nodes.is_empty() && edges.is_empty());
+    }
+
+    #[test]
+    fn asset_file_yields_a_bare_file_node() {
+        let dir = std::env::temp_dir();
+        let f = dir.join("plouf_asset_probe.json");
+        std::fs::write(&f, "{\"a\":1}").unwrap();
+        let (nodes, edges) = super::extract(&dir, &f);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].kind, "file");
+        assert!(edges.is_empty());
+        std::fs::remove_file(&f).ok();
     }
 
     #[test]

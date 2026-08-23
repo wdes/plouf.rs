@@ -126,6 +126,31 @@ mod tests {
     }
 
     #[test]
+    fn scan_walks_and_links_both_config_kinds() {
+        use std::fs;
+        let root = std::env::temp_dir().join("plouf_config_scan");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("standard/Sniffs")).unwrap();
+        fs::write(root.join("standard/Sniffs/FooSniff.php"), "<?php class FooSniff {}").unwrap();
+        fs::write(root.join("phpcs.xml"), "<ruleset><rule ref=\"./standard/Sniffs/FooSniff.php\"/><rule ref=\"Generic.X\"/></ruleset>").unwrap();
+        fs::write(root.join("phpstan.neon"), "rules:\n    - App\\Rules\\BarRule\n").unwrap();
+        let edges = super::scan(&root);
+        let t = targets(&edges);
+        assert!(t.contains(&"standard/Sniffs/FooSniff.php".to_string()));
+        assert!(t.contains(&"BarRule".to_string()));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn join_relative_and_ref_values_edge_cases() {
+        assert_eq!(super::join_relative("a/b", "../c.php"), "a/c.php"); // `..` pops a dir
+        assert_eq!(super::join_relative("", "./x.php"), "x.php"); // root config
+        // single- and double-quoted refs captured; a bare (unquoted) ref= skipped.
+        let refs = super::ref_values("<rule ref='a.php'/><rule ref=\"b.php\"/><x ref=nope/>");
+        assert_eq!(refs, vec!["a.php", "b.php"]);
+    }
+
+    #[test]
     fn phpstan_links_rule_classes_and_neon_includes() {
         let neon = "includes:\n    - phpstan-baseline.neon\nrules:\n    - Acme\\PHPStan\\Rules\\NoDynamicPropertyRule\n    - 'Acme\\PHPStan\\Rules\\OpenApiSyncRule'";
         let mut edges = Vec::new();

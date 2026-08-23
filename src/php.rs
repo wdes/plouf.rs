@@ -245,6 +245,12 @@ fn span(src: &str, start: u32, end: u32) -> &str {
 /// modern attributes (`#[CoversClass(X::class)]`, `#[CoversFunction('fn')]`,
 /// `#[CoversMethod(X::class, 'm')]`) and legacy docblocks (`@covers X`,
 /// `@coversDefaultClass X`) are recognised -- so `callers X` lists its tests.
+/// A syntactically valid (possibly namespaced) PHP class name -- no code
+/// punctuation. Used to reject fragments a loose attribute scan can pick up.
+fn is_class_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\\')
+}
+
 fn scan_covers(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
     for tag in ["#[CoversClass", "#[CoversFunction", "#[CoversMethod"] {
         let mut from = 0;
@@ -254,7 +260,12 @@ fn scan_covers(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
             let window = &code[at..code.len().min(at + 256)];
             if let Some(end) = window.find(')') {
                 if let Some(target) = crate::laravel::related_model(&window[..end]) {
-                    edges.push(RawEdge::named(rel.to_string(), "covers", target));
+                    // Guard against a stray string literal in the attribute args
+                    // (e.g. a rule test whose subject is `'->default('`): a covered
+                    // target must be a class name, not a code fragment.
+                    if is_class_name(&target) {
+                        edges.push(RawEdge::named(rel.to_string(), "covers", target));
+                    }
                 }
             }
         }
@@ -601,6 +612,25 @@ mod tests {
         assert!(edges.iter().any(|e| e.relation == "extends" && e.name.as_deref() == Some("Bar")));
         assert!(edges.iter().any(|e| e.relation == "implements" && e.name.as_deref() == Some("Baz")));
         assert!(has_call(&edges, "n", Some("Foo")));
+    }
+
+    #[test]
+    fn is_class_name_rejects_code_fragments() {
+        assert!(super::is_class_name("App\\Models\\Foo"));
+        assert!(super::is_class_name("FooRule"));
+        assert!(!super::is_class_name("->default(")); // the covers false-positive
+        assert!(!super::is_class_name("foo()"));
+        assert!(!super::is_class_name(""));
+    }
+
+    #[test]
+    fn require_spec_keeps_only_php_targets() {
+        // require/include always load a PHP file; garbage / non-.php is dropped.
+        assert_eq!(super::require_spec(" 'helpers.php'").as_deref(), Some("./helpers.php"));
+        assert_eq!(super::require_spec(" __DIR__ . '/../app.php'").as_deref(), Some("./../app.php"));
+        assert_eq!(super::require_spec(" ']'"), None);
+        assert_eq!(super::require_spec(" '../assets/x.css'"), None); // not a PHP include
+        assert_eq!(super::require_spec(" $dynamic . 'x.php'"), None); // dynamic base
     }
 
     #[test]
