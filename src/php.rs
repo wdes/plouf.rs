@@ -205,7 +205,10 @@ fn require_spec(stmt: &str) -> Option<String> {
     } else {
         format!("./{s}") // `'helpers.php'` -> `./helpers.php`
     };
-    Some(spec)
+    // require/include always load a PHP file; a non-`.php` spec is a false match
+    // -- the keyword sat inside a comment/string, or the arg is a dynamic build
+    // -- so drop it (this kills `]`, `)]`, prose fragments, ...).
+    std::path::Path::new(&spec).extension().is_some_and(|e| e.eq_ignore_ascii_case("php")).then_some(spec)
 }
 
 /// The first single/double-quoted string literal in `s` (inter-quote content).

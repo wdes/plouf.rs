@@ -206,6 +206,18 @@ fn resolve_relative(importer: &str, spec: &str, files: &HashSet<&str>) -> Option
             return Some(candidate);
         }
     }
+    // ESM/TS convention: `import './x.js'` refers to `x.ts` (the source the `.js`
+    // was emitted from). Swap the written JS extension for its TS/Vue twin.
+    for js in [".js", ".jsx", ".mjs", ".cjs"] {
+        if let Some(stem) = joined.strip_suffix(js) {
+            for ts in [".ts", ".tsx", ".mts", ".cts", ".vue"] {
+                let candidate = format!("{stem}{ts}");
+                if files.contains(candidate.as_str()) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     for index in INDEXES {
         let candidate = format!("{joined}{index}");
         if files.contains(candidate.as_str()) {
@@ -367,6 +379,17 @@ mod tests {
         let resolved = resolve(&nodes, &edges);
         let target = resolved.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str());
         assert_eq!(target, Some("resources/js/b.ts"));
+    }
+
+    #[test]
+    fn resolves_js_specifier_to_ts_twin() {
+        // `import './api/client.js'` hits client.ts -- the ESM/TS convention where
+        // the written `.js` extension refers to the `.ts` source.
+        let nodes = vec![node("resources/js/a.ts", "a.ts", "file"), node("resources/js/api/client.ts", "client.ts", "file")];
+        let edges = vec![RawEdge::named("resources/js/a.ts".to_string(), "imports", "./api/client.js".to_string())];
+        let r = resolve(&nodes, &edges);
+        let target = r.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str());
+        assert_eq!(target, Some("resources/js/api/client.ts"));
     }
 
     #[test]

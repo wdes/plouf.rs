@@ -262,6 +262,18 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         .iter()
         .filter(|e| is_reference(&e.relation))
         .filter(|e| !ids.contains(e.target.as_str()))
+        // Drop references that point OUTSIDE the repo -- expected, not gaps:
+        //  - an external import: a non-relative `vue` / `Illuminate\...` /
+        //    built-in specifier (a relative `./x` that misses IS a real gap);
+        //  - heritage (`extends`/`implements`) to a base not in the repo, which
+        //    is necessarily a framework/vendor base since PHP needs the parent
+        //    to exist.
+        // What survives is genuinely-internal broken links.
+        .filter(|e| match e.relation.as_str() {
+            "imports" => e.target.starts_with('.'),
+            "extends" | "implements" => false,
+            _ => true,
+        })
         .collect();
     unresolved.sort_by(|a, b| a.target.cmp(&b.target));
 
