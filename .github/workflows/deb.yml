@@ -25,10 +25,17 @@ jobs:
             - name: Install cargo-deb
               run: cargo install cargo-deb --locked
             - name: Build .deb
-              run: cargo deb
+              run: |
+                  cargo deb
+                  # Exact path for the single-file upload below: archive: false
+                  # takes ONE concrete file, not a wildcard.
+                  echo "DEB_FILE=$(ls target/debian/*.deb)" >> "$GITHUB_ENV"
             - name: Upload .deb
+              # A single-file artifact (archive: false): the .deb itself, not a zip
+              # wrapping the already-compressed package. The file name becomes the
+              # artifact name (the `name` input is ignored under archive: false).
               uses: actions/upload-artifact@v7
               with:
-                  name: plouf-rs-deb-${{ github.sha }}
-                  path: target/debian/*.deb
+                  path: ${{ env.DEB_FILE }}
+                  archive: false
                   retention-days: 30
