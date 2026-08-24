@@ -119,11 +119,22 @@ jobs:
                   dpkg-deb -x "$deb" extracted
                   cp extracted/usr/bin/plouf-rs dist/plouf-rs-${{ matrix.deb_arch }}
                   cp "$deb" dist/
-            - name: Upload artifacts
+                  # Exact name for the single-file (archive: false) upload below.
+                  echo "DEB_FILE=$(basename "$deb")" >> "$GITHUB_ENV"
+            # Single-file artifacts (archive: false): no zip wrapper -- the .deb is
+            # already a compressed package, and the raw binary stands alone. With
+            # archive: false the artifact name is the file name (`name` is ignored).
+            - name: Upload the .deb
               uses: actions/upload-artifact@v7
               with:
-                  name: dist-${{ matrix.deb_arch }}
-                  path: dist/*
+                  path: dist/${{ env.DEB_FILE }}
+                  archive: false
+                  if-no-files-found: error
+            - name: Upload the raw binary
+              uses: actions/upload-artifact@v7
+              with:
+                  path: dist/plouf-rs-${{ matrix.deb_arch }}
+                  archive: false
                   if-no-files-found: error
 
     musl:
@@ -175,11 +186,11 @@ jobs:
               run: |
                   mkdir -p dist
                   cp target/${{ matrix.target }}/release/plouf-rs dist/plouf-rs-${{ matrix.arch }}-musl
-            - name: Upload artifacts
+            - name: Upload the binary
               uses: actions/upload-artifact@v7
               with:
-                  name: dist-musl-${{ matrix.arch }}
-                  path: dist/*
+                  path: dist/plouf-rs-${{ matrix.arch }}-musl
+                  archive: false
                   if-no-files-found: error
 
     macos:
@@ -216,11 +227,17 @@ jobs:
                   mkdir -p dist
                   cp target/aarch64-apple-darwin/release/plouf-rs dist/plouf-rs-aarch64-apple-darwin
                   cp target/x86_64-apple-darwin/release/plouf-rs dist/plouf-rs-x86_64-apple-darwin
-            - name: Upload artifacts
+            - name: Upload the arm64 binary
               uses: actions/upload-artifact@v7
               with:
-                  name: dist-macos
-                  path: dist/*
+                  path: dist/plouf-rs-aarch64-apple-darwin
+                  archive: false
+                  if-no-files-found: error
+            - name: Upload the x86_64 binary
+              uses: actions/upload-artifact@v7
+              with:
+                  path: dist/plouf-rs-x86_64-apple-darwin
+                  archive: false
                   if-no-files-found: error
 
     e2e:
@@ -230,10 +247,13 @@ jobs:
         steps:
             - uses: actions/checkout@v7 # for the mock fixtures under tests/fixtures
             - name: Download the amd64 .deb
+              # Single-file artifacts are named after the file, so match the .deb
+              # by pattern and flatten it into dist/.
               uses: actions/download-artifact@v8
               with:
-                  name: dist-amd64
+                  pattern: plouf-rs_*_amd64.deb
                   path: dist
+                  merge-multiple: true
             - name: Install via apt
               run: sudo apt-get install -y ./dist/plouf-rs_*_amd64.deb
             - name: Assert --version matches the crate version
