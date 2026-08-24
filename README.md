@@ -49,6 +49,25 @@ sudo apt install /tmp/plouf-rs.deb
 The package also drops the `/plouf` agent skill ([SKILL.md](.claude/skills/plouf/SKILL.md)) under
 `/usr/share/doc/plouf-rs/skill/` -- copy it into a project's `.claude/skills/` to use it.
 
+The binary doubles as a **Claude Code status line**: `plouf-rs statusline` reads
+the harness context on stdin and prints the graph size, the model, cwd, context
+tokens, and **when `plouf-rs` was last queried** (`[3m ago]` / `[unused]`) -- a
+stale age flags that the agent has stopped using the graph:
+
+```
+plouf 17508n/42638e [3m ago] | Opus 4.8 | myrepo | ctx 45k
+```
+
+Wire it into Claude Code `settings.json` (merge the `statusLine` key in):
+
+```jsonc
+{
+  ...,
+  "statusLine": { "type": "command", "command": "plouf-rs statusline" },
+  ...
+}
+```
+
 Release binaries (`.deb` + the raw `plouf-rs-<arch>`) carry signed SLSA
 build-provenance attestations. Verify one before installing:
 

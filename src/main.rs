@@ -17,6 +17,7 @@ mod query;
 mod resolve;
 mod router;
 mod schema;
+mod statusline;
 mod twig;
 
 use std::collections::{HashMap, HashSet};
@@ -81,6 +82,9 @@ enum Cmd {
         #[arg(long, default_value = "build/schema.json")]
         schema: String,
     },
+    /// Render a Claude Code status line from the harness JSON on stdin (graph
+    /// size, model, cwd, ctx tokens, and how long since plouf-rs was last used).
+    Statusline,
 }
 
 use crate::model::{Node, RawEdge};
@@ -306,6 +310,7 @@ fn main() -> ExitCode {
         Cmd::Missing => query::missing(&cli.out),
         Cmd::Tables { schema } => schema::list_tables(&schema),
         Cmd::Table { name, schema } => schema::table(&schema, &name),
+        Cmd::Statusline => statusline::run(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
