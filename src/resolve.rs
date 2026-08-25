@@ -198,6 +198,9 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "renders" => Some(match_component_file(name, &idx.files).unwrap_or_else(|| name.to_string())),
             // PHP require/include -> the included file (relative to the includer).
             "requires" => Some(resolve_relative(&e.source, name, &idx.files).unwrap_or_else(|| name.to_string())),
+            // A file-scope `return` marker (config/manifest file) -> the file
+            // itself, so `missing` can tell "returns a value" from "empty/broken".
+            "returns" => Some(e.source.clone()),
             // A PHP file registers a custom Twig function -> its `twigfn:` node.
             "defines-fn" => Some(format!("twigfn:{name}")),
             // A Twig template calls one -> the node, but only if it was actually

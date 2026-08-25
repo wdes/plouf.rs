@@ -287,10 +287,16 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
 
     let has_children: HashSet<&str> =
         graph.edges.iter().filter(|e| e.relation == "contains").map(|e| e.source.as_str()).collect();
+    // Files whose whole purpose is to `return` a value at file scope (a
+    // `config/*.php` array, `bootstrap/app.php`): they declare no symbols by
+    // design, so they are not "empty/broken" -- exclude them from the report.
+    let returns_value: HashSet<&str> =
+        graph.edges.iter().filter(|e| e.relation == "returns").map(|e| e.source.as_str()).collect();
     let empty_files: Vec<&NodeRec> = graph
         .nodes
         .iter()
         .filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str()))
+        .filter(|n| !returns_value.contains(n.id.as_str()))
         // Template + asset files legitimately hold no code symbols -- not a gap.
         .filter(|n| {
             let ext = Path::new(&n.path).extension().and_then(|e| e.to_str()).unwrap_or("");

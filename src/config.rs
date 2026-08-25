@@ -54,18 +54,31 @@ fn scan_phpcs(source: &str, dir: &str, text: &str, edges: &mut Vec<RawEdge>) {
     }
 }
 
-/// phpstan neon list items: a `- Vendor\...\FooRule` FQCN (a `rules:` or
-/// `services:` entry) links to its class by bare name; a `- x.neon` include
-/// links to that neon file. Indentation is irrelevant to the linkage, so a flat
-/// line scan suffices.
+/// phpstan neon entries that name an in-repo class/file. A `- Vendor\...\FooRule`
+/// FQCN list item (the terse `rules:` form) links to its class by bare name. A
+/// `class: Vendor\...\FooRule` key -- the `services:` form, where a custom rule
+/// is registered with `tags: [phpstan.rules.rule]`, possibly as `- class: ...`
+/// inline -- links the same way; this is how modern `phpstan` rules are wired,
+/// and the terse list form does not cover them. A `- x.neon` include links to
+/// that neon file. Indentation is irrelevant, so a flat line scan suffices.
 fn scan_phpstan(source: &str, dir: &str, text: &str, edges: &mut Vec<RawEdge>) {
+    let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
     for line in text.lines() {
-        let Some(item) = line.trim().strip_prefix("- ") else { continue };
-        let value = item.trim().trim_matches(|c| c == '"' || c == '\'');
+        let trimmed = line.trim();
+        // `class: FQCN` or `- class: FQCN` (a `services:` registration).
+        if let Some(rest) = trimmed.strip_prefix("- ").unwrap_or(trimmed).strip_prefix("class:") {
+            let value = unquote(rest);
+            if value.contains('\\') {
+                edges.push(RawEdge::named(source.to_string(), "configures", dequalify(&value)));
+            }
+            continue;
+        }
+        let Some(item) = trimmed.strip_prefix("- ") else { continue };
+        let value = unquote(item);
         if value.contains('\\') {
-            edges.push(RawEdge::named(source.to_string(), "configures", dequalify(value)));
-        } else if Path::new(value).extension().is_some_and(|e| e.eq_ignore_ascii_case("neon")) {
-            edges.push(RawEdge::named(source.to_string(), "configures", join_relative(dir, value)));
+            edges.push(RawEdge::named(source.to_string(), "configures", dequalify(&value)));
+        } else if Path::new(&value).extension().is_some_and(|e| e.eq_ignore_ascii_case("neon")) {
+            edges.push(RawEdge::named(source.to_string(), "configures", join_relative(dir, &value)));
         }
     }
 }
@@ -159,5 +172,20 @@ mod tests {
         assert!(t.contains(&"NoDynamicPropertyRule".to_string())); // FQCN -> bare class name
         assert!(t.contains(&"OpenApiSyncRule".to_string())); // quoted FQCN too
         assert!(t.contains(&"phpstan-baseline.neon".to_string())); // include -> the neon file
+    }
+
+    #[test]
+    fn phpstan_links_services_class_registrations() {
+        // The modern `services:` form: a custom rule wired with a `class:` key
+        // (block form) or `- class:` inline, tagged as a phpstan rule. The terse
+        // `- FQCN` list scan misses these; the `class:` scan catches them.
+        let neon = "services:\n    -\n        class: Acme\\PHPStan\\Rules\\FooRule\n        tags:\n            - phpstan.rules.rule\n    - class: Acme\\PHPStan\\Rules\\BarRule\n      tags: [phpstan.rules.rule]";
+        let mut edges = Vec::new();
+        scan_phpstan("phpstan.neon", "", neon, &mut edges);
+        let t = targets(&edges);
+        assert!(t.contains(&"FooRule".to_string())); // block `class:` key
+        assert!(t.contains(&"BarRule".to_string())); // inline `- class:`
+        // The `tags: - phpstan.rules.rule` list item is not an FQCN/neon -> no edge.
+        assert!(!t.contains(&"phpstan.rules.rule".to_string()));
     }
 }

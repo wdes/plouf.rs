@@ -10,8 +10,9 @@ use mago_database::file::File;
 use mago_span::HasSpan;
 use mago_syntax::cst::cst::{
     ArrowFunction, Class, ClassLikeMemberSelector, Closure, Enum, Expression, Function,
-    FunctionLikeParameterList, Hint, Identifier, Interface, Method, MethodCall, StaticMethodCall,
-    Trait, TraitUse, Use, UseItems, Variable,
+    FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct, Interface,
+    Method, MethodCall, RequireConstruct, RequireOnceConstruct, Return, StaticMethodCall, Trait,
+    TraitUse, Use, UseItems, Variable,
 };
 use mago_syntax::cst::Program;
 use mago_syntax::parser::parse_file;
@@ -59,7 +60,9 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // controller): emit a `route:<path>` node + a `serves` edge to the class.
     crate::laravel::scan_route_attributes(rel, code, &mut nodes, &mut edges);
     scan_covers(rel, code, &mut edges);
-    scan_requires(rel, code, &mut edges);
+    // `require`/`include` edges are emitted from the CST during the walk above
+    // (see `walk_in_require_construct` &co) -- a keyword in a comment or string
+    // is not a construct, so it can never masquerade as a real include.
     scan_twig_functions(rel, code, &mut nodes, &mut edges);
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
@@ -127,38 +130,19 @@ fn var_name(expr: &Expression) -> Option<String> {
     }
 }
 
-/// Scan `require` / `require_once` / `include` / `include_once` statements and
-/// emit a `requires` edge from the file to the included file -- the PHP file
-/// dependency chain. The path is resolved relative to the including file (like a
-/// JS relative import): `__DIR__`/`dirname(__FILE__)` anchor to the file's dir;
-/// a plain `'x.php'` is treated as relative too. A dynamic path (a `$var`) or an
-/// absolute filesystem path is skipped.
-fn scan_requires(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
-    const KW: [&str; 4] = ["require_once", "require", "include_once", "include"];
-    let bytes = code.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !is_php_ident(bytes[i]) || (i > 0 && is_php_ident(bytes[i - 1])) {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < bytes.len() && is_php_ident(bytes[i]) {
-            i += 1;
-        }
-        if !KW.contains(&&code[start..i]) {
-            continue;
-        }
-        let stmt_end = code[i..].find(';').map_or(code.len(), |e| i + e);
-        if let Some(spec) = require_spec(&code[i..stmt_end]) {
-            edges.push(RawEdge::named(rel.to_string(), "requires", spec));
-        }
-        i = stmt_end;
+/// Emit a `requires` file-dependency edge for one `require`/`include` construct,
+/// given its path expression `value`. The path is resolved relative to the
+/// including file (like a JS relative import): `__DIR__`/`dirname(__FILE__)`
+/// anchor to the file's dir; a plain `'x.php'` is treated as relative too. A
+/// dynamic path (a `$var`) or an absolute filesystem path is skipped. Because
+/// `value` is the path expression *only* (not the rest of the line), and only
+/// real `require`/`include` constructs reach here, a keyword inside a comment or
+/// string literal can no longer mint a spurious edge.
+fn require_edge(value: &Expression<'_>, ctx: &mut Ctx) {
+    let slice = span(&ctx.source, value.start_offset(), value.end_offset());
+    if let Some(spec) = require_spec(slice) {
+        ctx.edges.push(RawEdge::named(ctx.rel.clone(), "requires", spec));
     }
-}
-
-const fn is_php_ident(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Scan custom Twig function/filter registrations (`new TwigFunction('name',
@@ -302,6 +286,9 @@ struct Ctx {
     minted: HashSet<String>,
     bindings: Vec<HashMap<String, String>>,
     pending_closure_name: Option<String>,
+    /// Whether a file-scope `return` has already been marked (a config/manifest
+    /// file `<?php return [...];`), so the marker edge is pushed at most once.
+    returned: bool,
 }
 
 impl Ctx {
@@ -319,6 +306,7 @@ impl Ctx {
             minted,
             bindings: Vec::new(),
             pending_closure_name: None,
+            returned: false,
         }
     }
 
@@ -586,6 +574,35 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         let src = ctx.cur();
         ctx.edges.push(RawEdge::call(src, m, true, recv));
     }
+
+    // `require` / `include` (and their `_once` forms) as file-dependency edges.
+    // Sourced from the CST so a keyword sitting in a comment / string / longer
+    // identifier is never mistaken for a real include (the old byte-scanner's
+    // false-positive class -- a keyword in a comment, a string, or a `PARAM_X`
+    // const / `$xInclude` variable name).
+    fn walk_in_require_construct(&self, node: &'ast RequireConstruct<'arena>, ctx: &mut Ctx) {
+        require_edge(node.value, ctx);
+    }
+    fn walk_in_require_once_construct(&self, node: &'ast RequireOnceConstruct<'arena>, ctx: &mut Ctx) {
+        require_edge(node.value, ctx);
+    }
+    fn walk_in_include_construct(&self, node: &'ast IncludeConstruct<'arena>, ctx: &mut Ctx) {
+        require_edge(node.value, ctx);
+    }
+    fn walk_in_include_once_construct(&self, node: &'ast IncludeOnceConstruct<'arena>, ctx: &mut Ctx) {
+        require_edge(node.value, ctx);
+    }
+
+    // A file-scope `return` (empty scope stack) marks a config/manifest file --
+    // `config/*.php` returning an array, `bootstrap/app.php` returning the built
+    // app. Such a file declares no reusable symbols by design, so `missing` must
+    // not flag it as an empty/broken file. Recorded as a `returns` self-edge.
+    fn walk_in_return(&self, _node: &'ast Return<'arena>, ctx: &mut Ctx) {
+        if ctx.scope.is_empty() && !ctx.returned {
+            ctx.returned = true;
+            ctx.edges.push(RawEdge::named(ctx.rel.clone(), "returns", ctx.rel.clone()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -727,6 +744,39 @@ mod tests {
         // dynamic ($var) and absolute filesystem paths are skipped
         assert!(!edges.iter().any(|e| e.relation == "requires" && e.name.as_deref() == Some("./x.php")));
         assert!(!edges.iter().any(|e| e.relation == "requires" && e.name.as_deref().is_some_and(|n| n.contains("abs"))));
+    }
+
+    #[test]
+    fn require_keyword_in_comment_string_or_identifier_is_not_an_edge() {
+        // The old byte-scanner matched `require`/`include` anywhere in the source
+        // -- inside comments, string literals, and const/var names -- and grabbed
+        // the next `.php` string as a bogus dependency. The CST walker sees only
+        // real constructs, so none of these lines produce a `requires` edge, yet
+        // the genuine `require` on the last line still does.
+        let code = "<?php\n\
+            // TODO: this require in a comment must be ignored, see config/foo.php\n\
+            $flag = 'skip require-dev when building bar.php';\n\
+            const PARAM_INCLUDE = 'include';\n\
+            $includeParameters = ['a.php'];\n\
+            require __DIR__ . '/real.php';\n";
+        let (_, edges) = extract("app/Foo.php", code);
+        let reqs: Vec<&str> = edges
+            .iter()
+            .filter(|e| e.relation == "requires")
+            .filter_map(|e| e.name.as_deref())
+            .collect();
+        assert_eq!(reqs, vec!["./real.php"], "only the real construct is a dependency");
+    }
+
+    #[test]
+    fn marks_file_scope_return_as_config_not_empty() {
+        // A config/manifest file returns a value at file scope -> `returns` marker.
+        let (_, cfg) = extract("config/app.php", "<?php\nreturn [\n  'name' => 'X',\n  'debug' => false,\n];");
+        assert!(has_named(&cfg, "returns", "config/app.php"), "config file gets a returns marker");
+
+        // A return *inside* a method is not a file-scope return -> no marker.
+        let (_, cls) = extract("app/Foo.php", "<?php\nclass Foo {\n  public function m(): int { return 1; }\n}");
+        assert!(!cls.iter().any(|e| e.relation == "returns"), "a method return is not a config marker");
     }
 
     #[test]
