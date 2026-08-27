@@ -1,6 +1,6 @@
 [package]
 name = "plouf-rs"
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2021"
 description = "A deterministic code-graph for a polyglot repo (PHP via Mago, JS/TS/Vue via oxc): index it, then query symbols, signatures, bodies, callers, and gaps."
 license = "MPL-2.0"
@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["code-graph", "static-analysis", "php", "laravel", "ast"]
 categories = ["development-tools"]
 # Keep the published crate to source + docs: drop CI, agent tooling, repo meta.
-exclude = [".github", ".claude", ".gitattributes", ".gitignore", "scripts"]
+exclude = [".github", ".claude", ".gitattributes", ".gitignore", "scripts", "RELEASING.md"]
 
 [[bin]]
 name = "plouf-rs"
