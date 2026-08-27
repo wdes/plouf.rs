@@ -34,12 +34,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrayref"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
-
-[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -59,11 +53,10 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "blake3"
-version = "1.8.6"
+version = "1.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76ae7bad254120e9e4c63bafc385310756f90c484eac0e36b8317cf09cb92a77"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
 dependencies = [
- "arrayref",
  "arrayvec",
  "cc",
  "cfg-if",
@@ -108,9 +101,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.3"
+version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "509591b7bcd67f4ef775afad7662703b4935daaa6ec0e5605cfb1090b32a2b6d"
+checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -151,7 +144,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -244,9 +237,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "either"
-version = "1.17.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
+checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
 name = "equivalent"
@@ -406,14 +399,14 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mago-allocator"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "allocator-api2",
  "blink-alloc",
@@ -422,8 +415,8 @@ dependencies = [
 
 [[package]]
 name = "mago-database"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "foldhash",
  "glob",
@@ -437,16 +430,16 @@ dependencies = [
 
 [[package]]
 name = "mago-php-version"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "schemars",
 ]
 
 [[package]]
 name = "mago-reporting"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "ariadne",
  "blake3",
@@ -464,16 +457,16 @@ dependencies = [
 
 [[package]]
 name = "mago-span"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "mago-database",
 ]
 
 [[package]]
 name = "mago-syntax"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "mago-allocator",
  "mago-database",
@@ -489,8 +482,8 @@ dependencies = [
 
 [[package]]
 name = "mago-syntax-core"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 dependencies = [
  "mago-allocator",
  "mago-database",
@@ -500,8 +493,8 @@ dependencies = [
 
 [[package]]
 name = "mago-text-edit"
-version = "1.47.0"
-source = "git+https://github.com/carthage-software/mago#1fd7bc443d1a2bb2f6b664296636dc611936dfd3"
+version = "1.47.4"
+source = "git+https://github.com/carthage-software/mago#7ba104a272b980a892c5330d02e5cc446f784bbc"
 
 [[package]]
 name = "memchr"
@@ -590,9 +583,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "ordered-float"
-version = "5.3.0"
+version = "5.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
+checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
 dependencies = [
  "num-traits",
  "rand",
@@ -660,7 +653,7 @@ dependencies = [
  "phf",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -937,9 +930,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "rand_core",
 ]
@@ -981,22 +974,22 @@ dependencies = [
 
 [[package]]
 name = "ref-cast"
-version = "1.0.26"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "216e8f773d7923bcba9ceb86a86c93cabb3903a11872fc3f138c49630e50b96d"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
 dependencies = [
  "ref-cast-impl",
 ]
 
 [[package]]
 name = "ref-cast-impl"
-version = "1.0.26"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1071,7 +1064,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1113,7 +1106,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1124,7 +1117,7 @@ checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1208,9 +1201,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -195,10 +195,11 @@ jobs:
 
     macos:
         name: macOS binaries (arm64 + x86_64, cross-built on Linux)
-        # No macOS runner at all: cargo-zigbuild uses zig as the cross-linker
-        # against the macOS SDK stubs, so both Apple targets build on a free
-        # Linux runner. Works because the crate is pure Rust over libSystem --
-        # no Apple frameworks to link.
+        # No macOS runner at all: cargo-zigbuild uses zig as the cross-linker,
+        # so both Apple targets build on a free Linux runner. A real macOS SDK
+        # is fetched below and pointed at via SDKROOT, because a transitive dep
+        # (notify, via mago-database) links CoreFoundation/CoreServices -- zig
+        # needs the actual frameworks, not just libSystem stubs, to link.
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
@@ -218,6 +219,21 @@ jobs:
               uses: mlugg/setup-zig@v2
             - name: Install cargo-zigbuild
               run: cargo install cargo-zigbuild --locked
+            - name: Fetch the macOS SDK
+              # cargo-zigbuild needs a real SDK to resolve `-framework
+              # CoreFoundation`/`CoreServices` (pulled in transitively by notify
+              # via mago-database). Fetch a pinned SDK, verify its checksum, and
+              # export SDKROOT so zig links against its frameworks.
+              env:
+                  SDK_VERSION: "15.5"
+              run: |
+                  base="https://github.com/joseluisq/macosx-sdks/releases/download/${SDK_VERSION}"
+                  f="MacOSX${SDK_VERSION}.sdk.tar.xz"
+                  curl -fsSL -O "${base}/${f}"
+                  curl -fsSL -O "${base}/sha256sum.txt"
+                  grep "${f}" sha256sum.txt | sha256sum -c -
+                  tar -xJf "${f}" -C "$HOME"
+                  echo "SDKROOT=$HOME/MacOSX${SDK_VERSION}.sdk" >> "$GITHUB_ENV"
             - name: Cross-build both macOS binaries
               run: |
                   cargo zigbuild --release --target aarch64-apple-darwin
