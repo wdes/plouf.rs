@@ -58,6 +58,7 @@ pub fn scan(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mu
     scan_common_object(rel, code, nodes, edges);
     scan_object_fields(rel, code, nodes, edges);
     scan_api_routes(rel, base, code, nodes, edges);
+    scan_includes(rel, code, edges);
 }
 
 /// `mod<Name> extends DolibarrModules`: mint a `module:<rights_class>` node (the
@@ -72,6 +73,11 @@ fn scan_module(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<Raw
     };
     nodes.push(node(rel, "module", &module));
     edges.push(RawEdge::named(rel.to_string(), "declares-module", module));
+    // `$this->depends = array('modProduct', 'modStock')` -> a `depends-on` edge
+    // to each required module's descriptor class.
+    for dep in assigned_array_strings(code, "depends") {
+        edges.push(RawEdge::named(rel.to_string(), "depends-on", dep));
+    }
 }
 
 /// Permission checks, both forms Dolibarr uses. The modern
@@ -251,6 +257,19 @@ fn scan_api_routes(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edg
     let base_path = class.to_lowercase();
     let bytes = code.as_bytes();
     let mut minted = HashSet::new();
+    // Layer A role gate: `@class DolibarrApiAccess {@requires user,external}` on
+    // the class -> a `requires-role` edge to each `role:<name>` node.
+    for role in api_required_roles(code) {
+        edges.push(RawEdge::named(rel.to_string(), "requires-role", role.clone()));
+        mint(&mut minted, nodes, Node {
+            id: format!("role:{role}"),
+            name: role,
+            kind: "role",
+            path: rel.to_string(),
+            start: 0,
+            end: 0,
+        });
+    }
     let mut from = 0;
     while let Some(pos) = code[from..].find("function") {
         let at = from + pos;
@@ -457,6 +476,38 @@ fn sql_table_name(s: &str) -> Option<String> {
     }
     let name = s[..i].strip_prefix("llx_").unwrap_or(&s[..i]);
     (!name.is_empty()).then(|| name.to_string())
+}
+
+/// `dol_include_once('/module/class/x.class.php')` -> a `dol-requires` file
+/// dependency edge (a module-relative include, resolved against the doc-root).
+/// A dynamic path is skipped.
+fn scan_includes(rel: &str, code: &str, edges: &mut Vec<RawEdge>) {
+    for_each_call(code, "dol_include_once", |args| {
+        if let Some(path) = split_args(args).first().and_then(|a| string_literal(a)) {
+            edges.push(RawEdge::named(rel.to_string(), "dol-requires", path));
+        }
+    });
+}
+
+/// A Dolibarr `langs/<locale>/<domain>.lang` file: each `Key = Value` line
+/// defines a translation key. Emitted as `uses-lang` edges so the key index
+/// (`lang.json`, read by the `uses` verb) records where a key is defined, next
+/// to where it is used. `#`-comment and blank lines are ignored.
+pub fn scan_lang_file(rel: &str, code: &str) -> Vec<RawEdge> {
+    let mut out = Vec::new();
+    for line in code.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() && key.bytes().all(|b| is_ident(b) || b == b'.' || b == b'-') {
+                out.push(RawEdge::named(rel.to_string(), "uses-lang", key.to_string()));
+            }
+        }
+    }
+    out
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -738,6 +789,48 @@ fn each_quoted(code: &str, mut f: impl FnMut(&str)) {
     }
 }
 
+/// Every quoted string in the array assigned to property `prop`
+/// (`$this->prop = array('a', 'b')` / `= ['a', 'b']`), boundary-checked like
+/// [`assigned_string`].
+fn assigned_array_strings(code: &str, prop: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find(prop) {
+        let at = from + pos;
+        from = at + prop.len();
+        let before_ok = at == 0 || !is_ident(bytes[at - 1]);
+        let after_ok = !matches!(bytes.get(at + prop.len()), Some(b) if is_ident(*b));
+        if !(before_ok && after_ok) {
+            continue;
+        }
+        let rest = &code[at + prop.len()..];
+        let Some(eq) = rest.find('=') else { continue };
+        let seg_end = rest[eq..].find(';').map_or(rest.len(), |s| eq + s);
+        let mut out = Vec::new();
+        each_quoted(&rest[eq..seg_end], |s| out.push(s.to_string()));
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    Vec::new()
+}
+
+/// The roles in a `@class DolibarrApiAccess {@requires user,external}` class tag.
+/// Empty unless the tag's class key is literally `DolibarrApiAccess` (matching
+/// Dolibarr's own `verifyAccess`, which ignores any other key).
+fn api_required_roles(code: &str) -> Vec<String> {
+    let Some(pos) = code.find("DolibarrApiAccess") else {
+        return Vec::new();
+    };
+    let rest = &code[pos..];
+    let Some(rq) = rest.find("{@requires") else {
+        return Vec::new();
+    };
+    let after = &rest[rq + "{@requires".len()..];
+    let end = after.find('}').unwrap_or(after.len());
+    after[..end].split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
 /// Whether `s` looks like a class name (upper-case initial, identifier chars) --
 /// the relation target in an `integer:Class:...` field type.
 fn is_field_class(s: &str) -> bool {
@@ -926,12 +1019,16 @@ mod tests {
                     $this->numero = 436150;
                     $this->rights_class = 'acme';
                     $this->family = 'products';
+                    $this->depends = array('modProduct', 'modStock');
                 }
             }
         ";
         let (nodes, edges) = run("acme/core/modules/modAcme.class.php", "modAcme.class.php", code);
         assert!(nodes.iter().any(|n| n.kind == "module" && n.id == "module:acme"));
         assert_eq!(edge_targets(&edges, "declares-module"), vec!["acme"]);
+        // depends -> a dependency edge per required module descriptor class.
+        let deps = edge_targets(&edges, "depends-on");
+        assert!(deps.contains(&"modProduct") && deps.contains(&"modStock"), "module deps: {deps:?}");
     }
 
     #[test]
@@ -990,6 +1087,37 @@ mod tests {
         // Every route serves the API class.
         let serves = edge_targets(&edges, "serves");
         assert!(!serves.is_empty() && serves.iter().all(|t| *t == "Products"));
+        // Layer A role gate from the class `@requires` tag.
+        let roles = edge_targets(&edges, "requires-role");
+        assert!(roles.contains(&"user") && roles.contains(&"external"), "api roles: {roles:?}");
+        assert!(nodes.iter().any(|n| n.kind == "role" && n.id == "role:user"));
+    }
+
+    #[test]
+    fn dol_include_once_emits_a_requires_edge() {
+        let code = r"<?php
+            dol_include_once('/acme/class/widget.class.php');
+            dol_include_once($dynamicPath);
+        ";
+        let (_, edges) = run("acme/widget_card.php", "widget_card.php", code);
+        let reqs = edge_targets(&edges, "dol-requires");
+        assert_eq!(reqs, vec!["/acme/class/widget.class.php"], "only the static include");
+    }
+
+    #[test]
+    fn lang_file_defines_keys_as_uses_lang() {
+        let lang = "# widgetshop language file\n\
+            WidgetLabel = Widget\n\
+            Widget.status.draft = Draft\n\
+            \n\
+            EmptyValueKept =\n";
+        let edges = super::scan_lang_file("langs/en_US/widgetshop.lang", lang);
+        let keys: Vec<&str> = edges.iter().filter(|e| e.relation == "uses-lang").filter_map(|e| e.name.as_deref()).collect();
+        assert!(keys.contains(&"WidgetLabel"));
+        assert!(keys.contains(&"Widget.status.draft"), "dotted keys kept");
+        assert!(keys.contains(&"EmptyValueKept"), "a key with an empty value still defines the key");
+        // the comment and blank line define nothing.
+        assert_eq!(keys.len(), 3);
     }
 
     #[test]

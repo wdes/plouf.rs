@@ -181,6 +181,9 @@ fn is_reference(relation: &str) -> bool {
             | "handles-hook"
             | "declares-module"
             | "relates-to"
+            | "depends-on"
+            | "requires-role"
+            | "dol-requires"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 
@@ -269,7 +272,7 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         .filter(|n| {
             !matches!(
                 n.kind.as_str(),
-                "file" | "component" | "route" | "module" | "permission" | "trigger" | "hook"
+                "file" | "component" | "route" | "module" | "permission" | "trigger" | "hook" | "role"
             )
         })
         .filter(|n| !referenced.contains(n.id.as_str()))
@@ -289,9 +292,11 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         // What survives is genuinely-internal broken links.
         .filter(|e| match e.relation.as_str() {
             "imports" => e.target.starts_with('.'),
-            // Heritage and `$fields` relations point at a base/related class that
-            // is usually a framework/core class outside the indexed tree.
-            "extends" | "implements" | "relates-to" => false,
+            // Heritage / `$fields` relations / module deps point at a
+            // base/related/dependency class usually outside the indexed tree; a
+            // `dol_include_once` of another module's file is likewise expected to
+            // be unresolvable in a standalone index. None are gaps.
+            "extends" | "implements" | "relates-to" | "depends-on" | "dol-requires" => false,
             _ => true,
         })
         // A target under `vendor/` is an out-of-repo dependency (Composer's

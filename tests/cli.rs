@@ -109,6 +109,22 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["find", "right:widgetshop", "--out", out_s]);
     assert!(o.contains("right:widgetshop.read"), "dolibarr permission: {o}");
 
+    // Dolibarr REST API: @url + auto-routing on an api_*.class.php class.
+    let (o, _, _) = run(&["find", "route:/widgets", "--out", out_s]);
+    assert!(o.contains("route:/widgets/ref/{ref}") && o.contains("route:/widgets/{id}"), "dolibarr api routes: {o}");
+
+    // Dolibarr API role gate (@class DolibarrApiAccess {@requires ...}).
+    let (o, _, _) = run(&["find", "role:", "--out", out_s]);
+    assert!(o.contains("role:user"), "dolibarr api role: {o}");
+
+    // Dolibarr .lang key definition surfaces via `uses` (defined + used).
+    let (o, _, _) = run(&["uses", "WidgetShelfLabel", "--out", out_s]);
+    assert!(o.contains("widgetshop.lang") && o.contains("widget_card.php"), "dolibarr lang key: {o}");
+
+    // Dolibarr dol_include_once resolves to the included module file.
+    let (o, _, _) = run(&["callers", "dolibarr/class/widget.class.php", "--out", out_s]);
+    assert!(o.contains("dol-requires\t"), "dolibarr dol_include_once: {o}");
+
     // missing: the gaps report runs clean.
     let (_, _, ok) = run(&["missing", "--out", out_s]);
     assert!(ok, "missing failed");

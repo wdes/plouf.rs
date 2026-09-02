@@ -1,0 +1,4 @@
+# Widgetshop translations (synthetic).
+WidgetShopMenu = Widget shop
+WidgetShelfLabel = Shelf label
+Widget.status.draft = Draft

@@ -206,8 +206,18 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "raises-trigger" | "handles-trigger" => Some(format!("trigger:{name}")),
             "fires-hook" | "handles-hook" => Some(format!("hook:{name}")),
             "declares-module" => Some(format!("module:{name}")),
-            // A `$fields` `integer:Class:...` FK -> the related class by name.
-            "relates-to" => Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string)),
+            // A `$fields` `integer:Class:...` FK, or a descriptor `depends`
+            // module -> the related/dependency class by name.
+            "relates-to" | "depends-on" => {
+                Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
+            }
+            // An API class' `@requires` role gate -> the shared `role:<name>` node.
+            "requires-role" => Some(format!("role:{name}")),
+            // `dol_include_once('/module/...')` -> the included file, resolved
+            // against the doc-root (try the path, then with its first segment --
+            // the module dir -- stripped, since a module is often indexed at its
+            // own root).
+            "dol-requires" => Some(resolve_dol_include(name, &idx.files)),
             // A PHP file registers a custom Twig function -> its `twigfn:` node.
             "defines-fn" => Some(format!("twigfn:{name}")),
             // A Twig template calls one -> the node, but only if it was actually
@@ -234,6 +244,24 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
         }
     }
     out
+}
+
+/// Resolve a Dolibarr `dol_include_once('/module/path.php')` include. The path
+/// is doc-root-absolute; try it verbatim (leading `/` stripped), then with the
+/// leading module-directory segment removed -- a module is often indexed at its
+/// own root, so `/mymod/class/x.php` lands at `class/x.php`. Kept raw (thus
+/// unresolved, but not reported by `missing`) when neither matches.
+fn resolve_dol_include(name: &str, files: &HashSet<&str>) -> String {
+    let path = name.trim_start_matches('/');
+    if files.contains(path) {
+        return path.to_string();
+    }
+    if let Some((_module, rest)) = path.split_once('/') {
+        if files.contains(rest) {
+            return rest.to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// Resolve a relative JS/TS import specifier (`./x`, `../y/z`) against the

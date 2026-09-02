@@ -27,8 +27,26 @@ const FORMATS: &[&dyn Format] = &[
     &crate::twig::Twig,
     &crate::bbscript::BbScript,
     &Sql,
+    &Lang,
     &Asset,
 ];
+
+/// Dolibarr `langs/<locale>/<domain>.lang` files: a bare `file` node plus a
+/// `uses-lang` edge per `Key = Value` line, so the key index records where a key
+/// is defined (drained into `lang.json`, never into `wiring.json`).
+struct Lang;
+
+impl Format for Lang {
+    fn matches(&self, _base: &str, ext: &str) -> bool {
+        ext == "lang"
+    }
+
+    fn extract(&self, rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+        let nodes =
+            vec![Node { id: rel.to_string(), name: base.to_string(), kind: "file", path: rel.to_string(), start: 0, end: 0 }];
+        (nodes, crate::dolibarr::scan_lang_file(rel, code))
+    }
+}
 
 /// Dolibarr SQL install files (`sql/llx_*.sql`): a bare `file` node plus a
 /// `table:<name>` node (via a `migrates` edge) for each `CREATE`/`ALTER TABLE`,
@@ -66,9 +84,9 @@ impl Format for Asset {
 
 /// Extensions collected for extraction -- the union across formats, used as the
 /// directory-walk filter.
-pub const SOURCE_EXTS: [&str; 19] = [
+pub const SOURCE_EXTS: [&str; 20] = [
     "php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html", "twig", "bbscript",
-    "json", "css", "scss", "sass", "svg", "sql",
+    "json", "css", "scss", "sass", "svg", "sql", "lang",
 ];
 
 /// Read one file and route it to the first matching format. Returns empty on a

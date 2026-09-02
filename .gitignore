@@ -1,2 +1,5 @@
 /target
 /build
+
+# agent worktrees (in-repo, never committed)
+.claude/worktrees/
