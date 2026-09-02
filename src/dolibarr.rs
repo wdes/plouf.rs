@@ -57,6 +57,7 @@ pub fn scan(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mu
     scan_hooks(rel, base, code, nodes, edges);
     scan_common_object(rel, code, nodes, edges);
     scan_object_fields(rel, code, nodes, edges);
+    scan_api_routes(rel, base, code, nodes, edges);
 }
 
 /// `mod<Name> extends DolibarrModules`: mint a `module:<rights_class>` node (the
@@ -228,6 +229,179 @@ fn scan_common_object(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut 
         start: 0,
         end: 0,
     });
+}
+
+/// Dolibarr REST API (`Luracast` `Restler`) route auto-wiring in an
+/// `api_<name>.class.php` class extending `DolibarrApi`. The route base path is
+/// `strtolower(ClassName)`. A public method is routed either explicitly, from a
+/// `PHPDoc` `@url <VERB> <path>` tag (one route per tag), or by convention when it
+/// has none: a method named exactly after an HTTP verb (`get`/`post`/`put`/
+/// `delete`/...) or `index` maps to that verb at the resource root, with each
+/// required parameter appended as a `/{param}` path segment. Each route mints a
+/// shared `route:<path>` node + a `serves` edge to the API class, exactly like
+/// the Laravel/attribute route nodes, so `find route:` and `callers <ApiClass>`
+/// span them all.
+fn scan_api_routes(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    if !(base.starts_with("api_") && code.contains("extends DolibarrApi")) {
+        return;
+    }
+    let Some(class) = api_class_name(code) else {
+        return;
+    };
+    let base_path = class.to_lowercase();
+    let bytes = code.as_bytes();
+    let mut minted = HashSet::new();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("function") {
+        let at = from + pos;
+        from = at + "function".len();
+        if at > 0 && is_ident(bytes[at - 1]) {
+            continue;
+        }
+        // A private method is not exposed as a route.
+        if code[..at].trim_end().rsplit(char::is_whitespace).next() == Some("private") {
+            continue;
+        }
+        let mut i = at + "function".len();
+        while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        let name_start = i;
+        while matches!(bytes.get(i), Some(b) if is_ident(*b)) {
+            i += 1;
+        }
+        let name = &code[name_start..i];
+        if name.is_empty() || name.starts_with('_') {
+            continue;
+        }
+        while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'(') {
+            continue;
+        }
+        let Some(close) = matching_paren(bytes, i) else {
+            continue;
+        };
+        let params = &code[i + 1..close];
+        from = close;
+
+        let urls = url_tags(preceding_docblock(code, at));
+        if !urls.is_empty() {
+            for path in urls {
+                let route = normalize_route(&format!("{base_path}/{path}"));
+                mint_route(rel, &route, &class, &mut minted, nodes, edges);
+            }
+        } else if auto_route_verb(name).is_some() {
+            let mut route = base_path.clone();
+            for p in required_params(params) {
+                route.push_str("/{");
+                route.push_str(&p);
+                route.push('}');
+            }
+            mint_route(rel, &normalize_route(&route), &class, &mut minted, nodes, edges);
+        }
+    }
+}
+
+/// The class name in `class <Name> extends DolibarrApi`.
+fn api_class_name(code: &str) -> Option<String> {
+    let pos = code.find("extends DolibarrApi")?;
+    let head = code[..pos].trim_end();
+    let start = head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+    (start < head.len()).then(|| head[start..].to_string())
+}
+
+/// The `/** ... */` docblock immediately preceding the `function` at `func_at`
+/// (only whitespace / visibility modifiers may sit between), else `""`.
+fn preceding_docblock(code: &str, func_at: usize) -> &str {
+    let head = code[..func_at].trim_end();
+    let Some(end) = head.rfind("*/") else {
+        return "";
+    };
+    let between = &code[end + 2..func_at];
+    let only_modifiers = between
+        .split_whitespace()
+        .all(|w| matches!(w, "public" | "protected" | "private" | "static" | "final" | "abstract"));
+    if only_modifiers {
+        if let Some(start) = head[..end].rfind("/**") {
+            return &code[start..end + 2];
+        }
+    }
+    ""
+}
+
+/// Every `@url <VERB> <path>` tag's path (prefix `/` stripped) in a docblock.
+fn url_tags(doc: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(pos) = doc[from..].find("@url") {
+        from = from + pos + "@url".len();
+        let rest = doc[from..].trim_start();
+        let verb_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        if !is_http_verb(&rest[..verb_end]) {
+            continue;
+        }
+        let after = rest[verb_end..].trim_start();
+        let path_end = after.find(char::is_whitespace).unwrap_or(after.len());
+        out.push(after[..path_end].trim_start_matches('/').to_string());
+    }
+    out
+}
+
+fn is_http_verb(v: &str) -> bool {
+    matches!(v, "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS")
+}
+
+/// The HTTP verb a method name auto-routes to when it carries no `@url`: a name
+/// that is exactly an HTTP verb, or `index` (the collection root).
+fn auto_route_verb(name: &str) -> Option<&'static str> {
+    match name {
+        "get" | "index" => Some("GET"),
+        "post" => Some("POST"),
+        "put" => Some("PUT"),
+        "patch" => Some("PATCH"),
+        "delete" => Some("DELETE"),
+        "head" => Some("HEAD"),
+        "options" => Some("OPTIONS"),
+        _ => None,
+    }
+}
+
+/// The names of the required parameters (those without a default `=`) in a
+/// method's parameter list, in order -- each becomes a `/{param}` path segment.
+fn required_params(params: &str) -> Vec<String> {
+    split_args(params)
+        .into_iter()
+        .filter(|p| !p.is_empty() && !p.contains('='))
+        .filter_map(|p| {
+            let dollar = p.find('$')?;
+            let after = &p[dollar + 1..];
+            let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+            (end > 0).then(|| after[..end].to_string())
+        })
+        .collect()
+}
+
+/// A single leading slash, no trailing slash.
+fn normalize_route(path: &str) -> String {
+    format!("/{}", path.trim_matches('/'))
+}
+
+/// Mint a shared `route:<path>` node (once) + a `serves` edge to the API class.
+fn mint_route(
+    rel: &str,
+    route: &str,
+    class: &str,
+    minted: &mut HashSet<String>,
+    nodes: &mut Vec<Node>,
+    edges: &mut Vec<RawEdge>,
+) {
+    let id = format!("route:{route}");
+    if minted.insert(id.clone()) {
+        nodes.push(Node { id: id.clone(), name: route.to_string(), kind: "route", path: rel.to_string(), start: 0, end: 0 });
+    }
+    edges.push(RawEdge::named(id, "serves", class.to_string()));
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -703,6 +877,64 @@ mod tests {
         let (nodes, edges) = run("acme/core/modules/modAcme.class.php", "modAcme.class.php", code);
         assert!(nodes.iter().any(|n| n.kind == "module" && n.id == "module:acme"));
         assert_eq!(edge_targets(&edges, "declares-module"), vec!["acme"]);
+    }
+
+    #[test]
+    fn api_routes_from_url_tag_and_auto_routing() {
+        let code = r"<?php
+            /**
+             * @access protected
+             * @class DolibarrApiAccess {@requires user,external}
+             */
+            class Products extends DolibarrApi
+            {
+                /**
+                 * Get a product by ref
+                 *
+                 * @param  string $ref  Reference
+                 * @url GET ref/{ref}
+                 */
+                public function getByRef($ref)
+                {
+                    return $this->_fetch(0, $ref);
+                }
+
+                public function get($id, $includestock = 0)
+                {
+                    return $this->_fetch($id);
+                }
+
+                public function index($sortfield = 't.ref')
+                {
+                    return array();
+                }
+
+                public function post($request_data = null)
+                {
+                    return 1;
+                }
+
+                public function delete($id)
+                {
+                    return 1;
+                }
+
+                private function _fetch($id, $ref = '')
+                {
+                    return null;
+                }
+            }
+        ";
+        let (nodes, edges) = run("product/class/api_products.class.php", "api_products.class.php", code);
+        let routes: std::collections::HashSet<&str> =
+            nodes.iter().filter(|n| n.kind == "route").map(|n| n.id.as_str()).collect();
+        assert!(routes.contains("route:/products/ref/{ref}"), "explicit @url route");
+        assert!(routes.contains("route:/products/{id}"), "auto GET/DELETE with a required id segment");
+        assert!(routes.contains("route:/products"), "auto index/post at the resource root");
+        assert!(!routes.iter().any(|r| r.contains("fetch")), "the private _fetch is not a route");
+        // Every route serves the API class.
+        let serves = edge_targets(&edges, "serves");
+        assert!(!serves.is_empty() && serves.iter().all(|t| *t == "Products"));
     }
 
     #[test]
