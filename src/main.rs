@@ -5,6 +5,7 @@
 mod bbscript;
 mod blade;
 mod config;
+mod dolibarr;
 mod format;
 mod gitattributes;
 mod html;

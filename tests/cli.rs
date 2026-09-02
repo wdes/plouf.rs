@@ -85,6 +85,26 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["callers", "resources/js/App.vue", "--out", out_s]);
     assert!(o.contains("renders\troute:/app"), "route->page: {o}");
 
+    // Dolibarr: the descriptor mints a module node.
+    let (o, _, _) = run(&["find", "module:", "--out", out_s]);
+    assert!(o.contains("module:widgetshop"), "dolibarr module: {o}");
+
+    // Dolibarr hook fan-in/out: a fired hook joins its firer page and handler.
+    let (o, _, _) = run(&["callers", "hook:formObjectOptions", "--out", out_s]);
+    assert!(o.contains("fires-hook\t") && o.contains("handles-hook\t"), "dolibarr hook: {o}");
+
+    // Dolibarr trigger (model event): raised by the object, handled by the interface.
+    let (o, _, _) = run(&["callers", "trigger:WIDGET_VALIDATE", "--out", out_s]);
+    assert!(o.contains("raises-trigger\t") && o.contains("handles-trigger\t"), "dolibarr trigger: {o}");
+
+    // Dolibarr table join: the CommonObject and a raw SQL query meet at table:<name>.
+    let (o, _, _) = run(&["callers", "table:widgetshop_widget", "--out", out_s]);
+    assert!(o.contains("table\t") && o.contains("uses-table\t"), "dolibarr table: {o}");
+
+    // Dolibarr permission: hasRight() on the page.
+    let (o, _, _) = run(&["find", "right:widgetshop", "--out", out_s]);
+    assert!(o.contains("right:widgetshop.read"), "dolibarr permission: {o}");
+
     // missing: the gaps report runs clean.
     let (_, _, ok) = run(&["missing", "--out", out_s]);
     assert!(ok, "missing failed");

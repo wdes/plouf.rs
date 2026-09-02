@@ -201,6 +201,11 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             // A file-scope `return` marker (config/manifest file) -> the file
             // itself, so `missing` can tell "returns a value" from "empty/broken".
             "returns" => Some(e.source.clone()),
+            // Dolibarr extension points -> their shared join nodes.
+            "checks-permission" => Some(format!("right:{name}")),
+            "raises-trigger" | "handles-trigger" => Some(format!("trigger:{name}")),
+            "fires-hook" | "handles-hook" => Some(format!("hook:{name}")),
+            "declares-module" => Some(format!("module:{name}")),
             // A PHP file registers a custom Twig function -> its `twigfn:` node.
             "defines-fn" => Some(format!("twigfn:{name}")),
             // A Twig template calls one -> the node, but only if it was actually

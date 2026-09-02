@@ -196,6 +196,67 @@ fn scan_static_string_arg(
     }
 }
 
+/// Raw-SQL table usages: an uppercase `FROM` / `JOIN` / `INTO` / `UPDATE`
+/// keyword followed by a bare table identifier, in any PHP source (a Laravel
+/// `DB::select('... FROM users ...')`, a Dolibarr `$db->query(<<<SQL ... FROM
+/// llx_facture ... SQL)`), emitted as `uses-table` edges. This joins a raw query
+/// to the same `table:<name>` node the model/migration mints, so `callers
+/// table:x` lists hand-written SQL too. A leading `llx_` (Dolibarr's default
+/// prefix) is stripped, so `llx_facture` and a model's `table_element = 'facture'`
+/// meet at `table:facture`. A non-literal target -- `FROM $var`, `FROM
+/// ".MAIN_DB_PREFIX."x`, `FROM (SELECT ...)` -- is skipped: the token after the
+/// keyword is not a bare identifier.
+pub fn scan_raw_sql_tables(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    let mut minted: HashSet<String> = HashSet::new();
+    let bytes = code.as_bytes();
+    for keyword in ["FROM", "JOIN", "INTO", "UPDATE"] {
+        let mut from = 0;
+        while let Some(pos) = code[from..].find(keyword) {
+            let at = from + pos;
+            from = at + keyword.len();
+            // A preceding identifier char means a longer word (e.g. `DATEFROM`).
+            if at > 0 && is_sql_ident(bytes[at - 1]) {
+                continue;
+            }
+            let mut i = at + keyword.len();
+            // The keyword must be followed by whitespace then the table name.
+            if !matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+                continue;
+            }
+            while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            let Some(table) = read_sql_table(&code[i..]) else { continue };
+            edges.push(RawEdge::named(rel.to_string(), "uses-table", table.clone()));
+            if minted.insert(table.clone()) {
+                nodes.push(Node { id: format!("table:{table}"), name: table.clone(), kind: "table", path: rel.to_string(), start: 0, end: 0 });
+            }
+        }
+    }
+}
+
+const fn is_sql_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The table name at the start of `s`: a bare identifier, schema-qualified names
+/// reduced to their last segment (`db.tbl` -> `tbl`) and a leading `llx_` prefix
+/// stripped. `None` when `s` does not start with an identifier char -- a
+/// variable, an interpolation, a quote, or a parenthesised subquery.
+fn read_sql_table(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    if !matches!(bytes.first(), Some(b) if b.is_ascii_alphabetic() || *b == b'_') {
+        return None;
+    }
+    let mut i = 0;
+    while matches!(bytes.get(i), Some(b) if is_sql_ident(*b) || *b == b'.') {
+        i += 1;
+    }
+    let name = s[..i].rsplit('.').next().unwrap_or(&s[..i]);
+    let name = name.strip_prefix("llx_").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Recognised `Route::<x>(...)` methods that wire a controller: the HTTP verbs
 /// (an action second argument), the resource/singleton family (a controller
 /// second argument), and `controller(...)` (a group's controller).
@@ -728,6 +789,49 @@ mod tests {
         super::scan_tables("f.php", "<?php myDB::table('x'); Schema::create ; DB::table  ('spaced');", &mut nodes, &mut edges);
         assert!(!edges.iter().any(|e| e.name.as_deref() == Some("x")));
         assert!(edges.iter().any(|e| e.relation == "uses-table" && e.name.as_deref() == Some("spaced")));
+    }
+
+    #[test]
+    fn scan_raw_sql_links_from_join_and_update() {
+        let code = r#"<?php
+            $rows = $db->query(<<<SQL
+                SELECT f.rowid, s.nom
+                FROM llx_facture AS f
+                LEFT JOIN llx_societe s ON s.rowid = f.fk_soc
+                SQL);
+            $db->query("UPDATE llx_product SET tosell = 1 WHERE rowid = 3");
+        "#;
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<RawEdge> = Vec::new();
+        super::scan_raw_sql_tables("core/gateway.php", code, &mut nodes, &mut edges);
+
+        let tables: std::collections::HashSet<&str> = edges
+            .iter()
+            .filter(|e| e.relation == "uses-table")
+            .filter_map(|e| e.name.as_deref())
+            .collect();
+        // A leading `llx_` is stripped, so raw SQL meets the model at table:<name>.
+        assert!(tables.contains("facture"), "FROM llx_facture -> facture");
+        assert!(tables.contains("societe"), "JOIN llx_societe -> societe");
+        assert!(tables.contains("product"), "UPDATE llx_product -> product");
+        assert!(nodes.iter().any(|n| n.kind == "table" && n.id == "table:facture"));
+    }
+
+    #[test]
+    fn scan_raw_sql_skips_dynamic_and_non_keyword_tables() {
+        let code = r#"<?php
+            $db->query("SELECT * FROM $table WHERE id = 1");
+            $db->query("SELECT * FROM ".MAIN_DB_PREFIX."societe");
+            $db->query("SELECT * FROM (SELECT 1) AS sub");
+            $rows = fetchFromCache();
+        "#;
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<RawEdge> = Vec::new();
+        super::scan_raw_sql_tables("f.php", code, &mut nodes, &mut edges);
+        // A $var, a concatenated prefix, a subquery, and the mixed-case
+        // `fetchFromCache` word are all skipped -- no bare table identifier.
+        assert!(edges.is_empty(), "expected no tables, got {edges:?}");
+        assert!(nodes.is_empty());
     }
 
     #[test]

@@ -174,6 +174,12 @@ fn is_reference(relation: &str) -> bool {
             | "serves"
             | "export-ignores"
             | "configures"
+            | "checks-permission"
+            | "raises-trigger"
+            | "handles-trigger"
+            | "fires-hook"
+            | "handles-hook"
+            | "declares-module"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 
@@ -257,7 +263,14 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         .iter()
         // `route:` join nodes point OUT to their controller (`serves`); nothing
         // targets them unless an e2e/router does, so they are not "unreferenced".
-        .filter(|n| !matches!(n.kind.as_str(), "file" | "component" | "route"))
+        // The Dolibarr join nodes (module/permission/trigger/hook) are the same:
+        // fan-in/out hubs, not symbols that should read as dead.
+        .filter(|n| {
+            !matches!(
+                n.kind.as_str(),
+                "file" | "component" | "route" | "module" | "permission" | "trigger" | "hook"
+            )
+        })
         .filter(|n| !referenced.contains(n.id.as_str()))
         .collect();
 

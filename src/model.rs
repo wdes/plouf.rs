@@ -17,6 +17,7 @@ pub struct Node {
 /// An edge before target resolution. `contains` carries a resolved `target_id`;
 /// every other relation carries a `name` (and, for member `calls`, a `recv_type`)
 /// resolved against the whole-tree index later.
+#[derive(Debug)]
 pub struct RawEdge {
     pub source: String,
     pub relation: &'static str,

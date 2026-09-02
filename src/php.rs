@@ -50,6 +50,9 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // Laravel table references (`Schema::create('x')`, `DB::table('x')`), scanned
     // from the raw source; join to model `table` edges via the shared `table:` node.
     crate::laravel::scan_tables(rel, code, &mut nodes, &mut edges);
+    // Raw-SQL table usages (`FROM`/`JOIN`/`INTO`/`UPDATE <table>`) -> `uses-table`
+    // edges, so a hand-written query joins the model/migration at `table:<name>`.
+    crate::laravel::scan_raw_sql_tables(rel, code, &mut nodes, &mut edges);
     // Data migrations write rows via an Eloquent model (not Schema/DB::table);
     // link them to the model's table so `callers table:x` sees the seeders.
     crate::laravel::scan_data_migrations(rel, code, &mut edges);
@@ -64,6 +67,9 @@ pub fn extract(rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
     // (see `walk_in_require_construct` &co) -- a keyword in a comment or string
     // is not a construct, so it can never masquerade as a real include.
     scan_twig_functions(rel, code, &mut nodes, &mut edges);
+    // Dolibarr extension points: module descriptors, permissions, triggers,
+    // hooks, and CommonObject -> table links.
+    crate::dolibarr::scan(rel, base, code, &mut nodes, &mut edges);
     edges.extend(crate::lang::scan(rel, code));
     (nodes, edges)
 }
