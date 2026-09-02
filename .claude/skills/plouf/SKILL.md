@@ -76,13 +76,24 @@ the first index exists.)
 
 ```bash
 plouf-rs find CompanyController          # symbols whose id/name matches
+plouf-rs grep "bullet points"            # search file CONTENT (code+comments+strings)
 plouf-rs sig Company.getId               # a symbol's declaration line
-plouf-rs body InvoiceConverter.convert   # full source of a fn/method/class/enum
+plouf-rs body InvoiceConverter.convert   # source of a fn/method/class (truncated; --full for all)
 plouf-rs callers BaseRequest             # who references it (calls/imports/extends/includes)
+plouf-rs twin BBCode                      # the cross-language same-name port(s)
+plouf-rs tests Company                    # the tests that cover a symbol (@covers + test/spec refs)
+plouf-rs orient InvoiceRichText           # one shot: sig+body+tests+twin+callers (or grep a keyword)
 plouf-rs find route:                     # list every route (Laravel/attribute/OpenAPI)
 plouf-rs uses invoice.title              # files using a translation key (PHP/Vue/Blade)
 plouf-rs missing                         # gaps: unreferenced, unresolved, empty files
 ```
+
+**Start with `orient` when you do not yet know the symbol name.** Given a keyword
+from the task ("bullet", "<ul>") it falls back to a content `grep` and shows the
+enclosing symbol, so you discover the class/file that owns a concept without
+guessing names. `grep` is the raw content search; `twin` jumps between a PHP class
+and its JS/TS port; `tests` surfaces spec-by-example. A miss on `find`/`sig`/
+`body`/`callers`/`orient` prints a "did you mean" with the nearest real names.
 
 `uses` takes an exact translation key (Laravel `__`/`trans`/`trans_choice`, Vue
 `$t`/`t`, Angular ngx-translate `.instant(...)` + the `| translate` pipe, gettext)

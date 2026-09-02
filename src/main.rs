@@ -62,10 +62,25 @@ enum Cmd {
     Find { term: String },
     /// Print the declaration (signature) line of a symbol.
     Sig { symbol: String },
-    /// Print the full source body of a symbol.
-    Body { symbol: String },
+    /// Print the source body of a symbol (truncated unless `--full`).
+    Body {
+        symbol: String,
+        /// Print the whole body without the line-budget truncation.
+        #[arg(long)]
+        full: bool,
+    },
     /// List what references a symbol (calls/imports/extends/implements).
     Callers { symbol: String },
+    /// Case-insensitive search over file CONTENT (code, comments, string
+    /// literals), printing the enclosing symbol of each hit -- concept search.
+    Grep { text: String },
+    /// List a symbol's cross-file / cross-language same-name twin(s).
+    Twin { symbol: String },
+    /// List the tests that cover a symbol (`@covers` + test/spec references).
+    Tests { symbol: String },
+    /// One compact shot -- signature, truncated body, tests, twin, callers of a
+    /// symbol (or a content `grep` when the argument is a keyword, not a symbol).
+    Orient { target: String },
     /// List files that use a translation KEY (exact, else substring), across
     /// PHP/Vue/Blade -- read from the `.graph/lang.json` sidecar.
     Uses { key: String },
@@ -305,8 +320,12 @@ fn main() -> ExitCode {
         }),
         Cmd::Find { term } => query::find(&cli.out, &term),
         Cmd::Sig { symbol } => query::signature(&cli.out, &symbol),
-        Cmd::Body { symbol } => query::body(&cli.out, &symbol),
+        Cmd::Body { symbol, full } => query::body(&cli.out, &symbol, full),
         Cmd::Callers { symbol } => query::callers(&cli.out, &symbol),
+        Cmd::Grep { text } => query::grep(&cli.out, &text),
+        Cmd::Twin { symbol } => query::twin(&cli.out, &symbol),
+        Cmd::Tests { symbol } => query::tests(&cli.out, &symbol),
+        Cmd::Orient { target } => query::orient(&cli.out, &target),
         Cmd::Uses { key } => query::uses(&cli.out, &key),
         Cmd::Missing => query::missing(&cli.out),
         Cmd::Tables { schema } => schema::list_tables(&schema),

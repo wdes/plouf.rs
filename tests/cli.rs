@@ -28,6 +28,7 @@ fn run(args: &[&str]) -> (String, String, bool) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one end-to-end pass over every verb
 fn indexes_and_answers_every_verb() {
     let out = out_dir();
     let out_s = out.to_str().unwrap();
@@ -128,6 +129,50 @@ fn indexes_and_answers_every_verb() {
     // missing: the gaps report runs clean.
     let (_, _, ok) = run(&["missing", "--out", out_s]);
     assert!(ok, "missing failed");
+
+    // grep: content search finds the concept even when the caller only knows the
+    // task vocabulary ("bullet"), not the symbol name -- the enclosing symbol is
+    // reported, in both the PHP class and its JS twin.
+    let (o, _, ok) = run(&["grep", "bullet", "--out", out_s]);
+    assert!(ok, "grep failed");
+    assert!(o.contains("app/Support/Markup.php#Markup.toHtml"), "grep php owner: {o}");
+    assert!(o.contains("resources/js/markup.ts#Markup.toHtml"), "grep js owner: {o}");
+    assert!(o.contains(": "), "grep prints the matching line: {o}");
+    // A term nothing contains prints nothing but still succeeds.
+    let (o, _, ok) = run(&["grep", "zzz-no-such-content", "--out", out_s]);
+    assert!(ok && o.trim().is_empty(), "grep empty: {o:?}");
+
+    // twin: the cross-language same-name port (PHP `Markup` -> the TS `Markup`).
+    let (o, _, ok) = run(&["twin", "app/Support/Markup.php#Markup", "--out", out_s]);
+    assert!(ok && o.contains("resources/js/markup.ts#Markup"), "twin cross-lang: {o}");
+    // Same name in another PHP file also counts as a twin.
+    let (o, _, _) = run(&["twin", "app/Models/Company.php#Company.label", "--out", out_s]);
+    assert!(o.contains("util.php#Named.label"), "twin same-lang: {o}");
+
+    // tests: the PHPUnit `@covers` edge into the Company class.
+    let (o, _, ok) = run(&["tests", "Company", "--out", out_s]);
+    assert!(ok && o.contains("covers\ttests/CompanyTest.php"), "tests covers: {o}");
+
+    // orient a symbol: signature + body + twin in one compact shot.
+    let (o, _, ok) = run(&["orient", "app/Support/Markup.php#Markup.toHtml", "--out", out_s]);
+    assert!(ok, "orient failed");
+    assert!(o.contains("# body") && o.contains("function toHtml"), "orient sections: {o}");
+    assert!(o.contains("# twin") && o.contains("markup.ts#Markup.toHtml"), "orient twin: {o}");
+    // orient a keyword (unresolvable) falls back to a content grep.
+    let (o, _, ok) = run(&["orient", "bullet", "--out", out_s]);
+    assert!(ok && o.contains("# grep") && o.contains("Markup.toHtml"), "orient grep fallback: {o}");
+
+    // body: truncation is opt-out via --full; the plain form still prints the body.
+    let (o, _, ok) = run(&["body", "helper", "--full", "--out", out_s]);
+    assert!(ok && o.contains("strlen"), "body --full: {o}");
+
+    // did-you-mean: a near-miss suggests the nearest real symbols, not a dead end.
+    let (_, err, ok) = run(&["sig", "Compaany", "--out", out_s]);
+    assert!(!ok, "near-miss should fail");
+    assert!(err.contains("did you mean") && err.contains("Company"), "did-you-mean: {err}");
+    // find surfaces the same hint on stdout when nothing matches.
+    let (o, _, ok) = run(&["find", "Compaany", "--out", out_s]);
+    assert!(ok && o.contains("did you mean") && o.contains("Company"), "find hint: {o}");
 
     // Error paths: an unknown symbol, and an ambiguous one.
     let (_, _, ok) = run(&["body", "definitely_not_here", "--out", out_s]);
