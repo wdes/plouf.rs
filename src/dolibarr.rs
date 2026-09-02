@@ -404,6 +404,61 @@ fn mint_route(
     edges.push(RawEdge::named(id, "serves", class.to_string()));
 }
 
+/// Dolibarr SQL install files (`sql/llx_*.sql`, `.key.sql`): a `CREATE TABLE` or
+/// `ALTER TABLE llx_<name>` (case-insensitive) mints/links the shared
+/// `table:<name>` node via a `migrates` edge, joining the DDL to the object and
+/// raw-SQL usages -- the Dolibarr analog of a Laravel migration. The `llx_`
+/// prefix is stripped; a dynamic/quoted name is skipped.
+pub fn scan_sql_ddl(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    let lower = code.to_ascii_lowercase();
+    let bytes = code.as_bytes();
+    let mut minted = HashSet::new();
+    for verb in ["create table", "alter table"] {
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(verb) {
+            let at = from + pos;
+            from = at + verb.len();
+            let mut i = at + verb.len();
+            while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            if lower[i..].starts_with("if not exists") {
+                i += "if not exists".len();
+                while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+                    i += 1;
+                }
+            }
+            let Some(table) = sql_table_name(&code[i..]) else {
+                continue;
+            };
+            edges.push(RawEdge::named(rel.to_string(), "migrates", table.clone()));
+            mint(&mut minted, nodes, Node {
+                id: format!("table:{table}"),
+                name: table,
+                kind: "table",
+                path: rel.to_string(),
+                start: 0,
+                end: 0,
+            });
+        }
+    }
+}
+
+/// A bare SQL table identifier at the start of `s` with a leading `llx_` stripped;
+/// `None` for a quoted/backticked/dynamic name.
+fn sql_table_name(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    if !matches!(bytes.first(), Some(b) if b.is_ascii_alphabetic() || *b == b'_') {
+        return None;
+    }
+    let mut i = 0;
+    while matches!(bytes.get(i), Some(b) if is_ident(*b)) {
+        i += 1;
+    }
+    let name = s[..i].strip_prefix("llx_").unwrap_or(&s[..i]);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 // --- helpers ---------------------------------------------------------------
 
 /// A `kind:name` join node (`module:`/`right:`/`trigger:`/`hook:`).
@@ -935,6 +990,27 @@ mod tests {
         // Every route serves the API class.
         let serves = edge_targets(&edges, "serves");
         assert!(!serves.is_empty() && serves.iter().all(|t| *t == "Products"));
+    }
+
+    #[test]
+    fn sql_ddl_links_created_and_altered_tables() {
+        let sql = r"
+            CREATE TABLE llx_widgetshop_widget (
+                rowid integer AUTO_INCREMENT PRIMARY KEY,
+                ref   varchar(128) NOT NULL
+            );
+            ALTER TABLE llx_widgetshop_widget ADD INDEX idx_ref (ref);
+            create table if not exists llx_widgetshop_line (fk_widget integer);
+        ";
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        super::scan_sql_ddl("widgetshop/sql/llx_widgetshop_widget.sql", sql, &mut nodes, &mut edges);
+        let tables: std::collections::HashSet<&str> =
+            edges.iter().filter(|e| e.relation == "migrates").filter_map(|e| e.name.as_deref()).collect();
+        // CREATE and ALTER on the same table both link it; llx_ prefix stripped.
+        assert!(tables.contains("widgetshop_widget"), "CREATE + ALTER");
+        assert!(tables.contains("widgetshop_line"), "lower-case create table if not exists");
+        assert!(nodes.iter().any(|n| n.kind == "table" && n.id == "table:widgetshop_widget"));
     }
 
     #[test]

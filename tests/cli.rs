@@ -97,9 +97,13 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["callers", "trigger:WIDGET_VALIDATE", "--out", out_s]);
     assert!(o.contains("raises-trigger\t") && o.contains("handles-trigger\t"), "dolibarr trigger: {o}");
 
-    // Dolibarr table join: the CommonObject and a raw SQL query meet at table:<name>.
+    // Dolibarr table join: the CommonObject, a raw SQL query, and the .sql DDL
+    // all meet at table:<name>.
     let (o, _, _) = run(&["callers", "table:widgetshop_widget", "--out", out_s]);
-    assert!(o.contains("table\t") && o.contains("uses-table\t"), "dolibarr table: {o}");
+    assert!(
+        o.contains("table\t") && o.contains("uses-table\t") && o.contains("migrates\t"),
+        "dolibarr table: {o}"
+    );
 
     // Dolibarr permission: hasRight() on the page.
     let (o, _, _) = run(&["find", "right:widgetshop", "--out", out_s]);

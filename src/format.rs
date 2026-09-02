@@ -26,8 +26,28 @@ const FORMATS: &[&dyn Format] = &[
     &crate::html::Html,
     &crate::twig::Twig,
     &crate::bbscript::BbScript,
+    &Sql,
     &Asset,
 ];
+
+/// Dolibarr SQL install files (`sql/llx_*.sql`): a bare `file` node plus a
+/// `table:<name>` node (via a `migrates` edge) for each `CREATE`/`ALTER TABLE`,
+/// joining the DDL to the object and raw-SQL usages of the same table.
+struct Sql;
+
+impl Format for Sql {
+    fn matches(&self, _base: &str, ext: &str) -> bool {
+        ext == "sql"
+    }
+
+    fn extract(&self, rel: &str, base: &str, code: &str) -> (Vec<Node>, Vec<RawEdge>) {
+        let mut nodes =
+            vec![Node { id: rel.to_string(), name: base.to_string(), kind: "file", path: rel.to_string(), start: 0, end: 0 }];
+        let mut edges = Vec::new();
+        crate::dolibarr::scan_sql_ddl(rel, code, &mut nodes, &mut edges);
+        (nodes, edges)
+    }
+}
 
 /// Non-code assets (`*.json`, `*.css`, ...): a bare `file` node with no symbols,
 /// just so a relative `import './x.json'` / `./styles.css` has a target to link
@@ -46,9 +66,9 @@ impl Format for Asset {
 
 /// Extensions collected for extraction -- the union across formats, used as the
 /// directory-walk filter.
-pub const SOURCE_EXTS: [&str; 18] = [
+pub const SOURCE_EXTS: [&str; 19] = [
     "php", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "html", "twig", "bbscript",
-    "json", "css", "scss", "sass", "svg",
+    "json", "css", "scss", "sass", "svg", "sql",
 ];
 
 /// Read one file and route it to the first matching format. Returns empty on a
