@@ -19,7 +19,13 @@ pub fn run() -> Result<(), std::io::Error> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let ctx: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+    println!("{}", render(&ctx));
+    Ok(())
+}
 
+/// Build the status line from an already-parsed harness context (the pure part
+/// of [`run`], split out so it is testable without stdin/stdout).
+fn render(ctx: &Value) -> String {
     let proj = ctx["workspace"]["project_dir"].as_str().or_else(|| ctx["cwd"].as_str()).unwrap_or(".");
     let dir = ctx["workspace"]["current_dir"].as_str().or_else(|| ctx["cwd"].as_str()).unwrap_or(".");
     let model = ctx["model"]["display_name"].as_str().or_else(|| ctx["model"]["id"].as_str()).unwrap_or("?");
@@ -29,8 +35,7 @@ pub fn run() -> Result<(), std::io::Error> {
     let dir_base = dir.rsplit('/').next().unwrap_or(dir);
     let ctx_seg = ctx_k.map_or_else(String::new, |k| format!(" | ctx {k}k"));
 
-    println!("{} [{recency}] | {model} | {dir_base}{ctx_seg}", graph_size(proj));
-    Ok(())
+    format!("{} [{recency}] | {model} | {dir_base}{ctx_seg}", graph_size(proj))
 }
 
 /// Node/edge counts from the `stats.json` sidecar `plouf-rs index` writes; a
@@ -144,7 +149,10 @@ fn format_age(secs: i64) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{days_from_civil, format_age, is_plouf_query, parse_iso_epoch, usage_tokens};
+    use super::{
+        days_from_civil, format_age, graph_size, is_plouf_query, parse_iso_epoch, read_tail, render,
+        transcript_stats, usage_tokens,
+    };
     use serde_json::json;
 
     #[test]
@@ -180,5 +188,68 @@ mod tests {
         let usage = json!({"message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 2}}});
         assert_eq!(usage_tokens(&usage), Some(17));
         assert_eq!(usage_tokens(&json!({"message": {}})), None);
+    }
+
+    #[test]
+    fn graph_size_reads_stats_or_reports_no_index() {
+        let proj = std::env::temp_dir().join(format!("plouf_sl_gs_{}", std::process::id()));
+        let graph = proj.join("build/plouf-rs-out/.graph");
+        std::fs::create_dir_all(&graph).unwrap();
+        std::fs::write(graph.join("stats.json"), r#"{"nodes":10,"edges":20}"#).unwrap();
+        assert_eq!(graph_size(proj.to_str().unwrap()), "plouf 10n/20e");
+        // A project with no index sidecar reports a terse marker.
+        let empty = std::env::temp_dir().join(format!("plouf_sl_none_{}", std::process::id()));
+        assert_eq!(graph_size(empty.to_str().unwrap()), "plouf (no index)");
+        std::fs::remove_dir_all(&proj).ok();
+    }
+
+    #[test]
+    fn read_tail_returns_last_bytes_and_handles_missing() {
+        let f = std::env::temp_dir().join(format!("plouf_sl_tail_{}", std::process::id()));
+        std::fs::write(&f, "abcdefghij").unwrap();
+        // A max larger than the file yields the whole content; a smaller one, the tail.
+        assert_eq!(read_tail(f.to_str().unwrap(), 100).as_deref(), Some("abcdefghij"));
+        assert_eq!(read_tail(f.to_str().unwrap(), 4).as_deref(), Some("ghij"));
+        // An empty path and a missing file both yield None.
+        assert_eq!(read_tail("", 10), None);
+        assert_eq!(read_tail("/no/such/plouf/transcript", 10), None);
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn transcript_stats_reports_recency_and_context_tokens() {
+        let f = std::env::temp_dir().join(format!("plouf_sl_ts_{}", std::process::id()));
+        let plouf_call = json!({
+            "timestamp": "2020-01-02T03:04:05.000Z",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "plouf-rs find X"}}
+            ]}
+        });
+        let usage = json!({"message": {"usage": {"input_tokens": 40000, "cache_read_input_tokens": 5000}}});
+        std::fs::write(&f, format!("{plouf_call}\n{usage}\n")).unwrap();
+        let (recency, ctx_k) = transcript_stats(f.to_str().unwrap());
+        // A 2020 query is years in the past -> an "Nd ago" recency, never "unused".
+        assert!(recency.ends_with("ago") && recency != "unused", "recency: {recency}");
+        assert_eq!(ctx_k, Some(45)); // (40000 + 5000) / 1000
+        // An empty transcript path -> unused, no tokens.
+        assert_eq!(transcript_stats(""), ("unused".to_string(), None));
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn render_builds_the_status_line_with_fallbacks() {
+        // No index, no transcript: falls back to "(no index)" / "[unused]", and
+        // the cwd is shown by its basename with no ctx segment.
+        let ctx = json!({
+            "workspace": {"project_dir": "/no/such/plouf/proj", "current_dir": "/srv/apps/myrepo"},
+            "model": {"display_name": "Opus 4.8"},
+            "transcript_path": ""
+        });
+        assert_eq!(render(&ctx), "plouf (no index) [unused] | Opus 4.8 | myrepo");
+
+        // Model id is the fallback when there is no display name; `.` when the
+        // workspace is absent entirely.
+        let bare = json!({"model": {"id": "claude-x"}});
+        assert_eq!(render(&bare), "plouf (no index) [unused] | claude-x | .");
     }
 }
