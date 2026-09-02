@@ -518,7 +518,25 @@ pub fn uses(out: &str, key: &str) -> Result<(), io::Error> {
 
 /// File extensions whose nodes legitimately hold no code symbols, so an empty
 /// one is not a gap: templates and non-code assets.
-const NO_SYMBOL_EXTS: [&str; 6] = ["html", "json", "css", "scss", "sass", "svg"];
+const NO_SYMBOL_EXTS: [&str; 8] = ["html", "json", "css", "scss", "sass", "svg", "lang", "sql"];
+
+/// Whether a `requires`/`dol-requires` target is the Dolibarr entry-point
+/// bootstrap (`main.inc.php`/`master.inc.php`), reached by a `require
+/// '../../main.inc.php'` fallback chain that always points at the out-of-tree
+/// core root -- expected, never a gap.
+fn is_bootstrap(target: &str) -> bool {
+    target.ends_with("main.inc.php") || target.ends_with("master.inc.php")
+}
+
+/// Whether a heritage target names a Dolibarr framework base whose subclasses are
+/// registry/config/cron-dispatched entry points (numbering `Modele*`, PDF doc
+/// models, `ModeleBoxes` widgets, module descriptors, triggers, hook handlers,
+/// API classes) -- live in production but never called from indexed code.
+fn is_framework_base(name: &str) -> bool {
+    let base = name.rsplit('\\').next().unwrap_or(name);
+    base.starts_with("Modele")
+        || matches!(base, "DolibarrModules" | "DolibarrTriggers" | "CommonHookActions" | "DolibarrApi")
+}
 
 /// Report graph gaps: symbols nothing references, edges that never resolved to a
 /// node, and files that parsed to nothing.
@@ -532,6 +550,19 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             referenced.insert(e.target.as_str());
         }
     }
+
+    // Classes that extend a Dolibarr framework base are registry/config/cron
+    // dispatched -- entry points, not dead code -- as are all their methods.
+    let framework_entry: HashSet<&str> = graph
+        .edges
+        .iter()
+        .filter(|e| matches!(e.relation.as_str(), "extends" | "implements"))
+        .filter(|e| is_framework_base(&e.target))
+        .map(|e| e.source.as_str())
+        .collect();
+    let is_entry = |id: &str| {
+        framework_entry.contains(id) || id.rsplit_once('.').is_some_and(|(cls, _)| framework_entry.contains(cls))
+    };
 
     let unreferenced: Vec<&NodeRec> = graph
         .nodes
@@ -547,6 +578,7 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             )
         })
         .filter(|n| !referenced.contains(n.id.as_str()))
+        .filter(|n| !is_entry(&n.id))
         .collect();
 
     let mut unresolved: Vec<&EdgeRec> = graph
@@ -568,12 +600,15 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             // `dol_include_once` of another module's file is likewise expected to
             // be unresolvable in a standalone index. None are gaps.
             "extends" | "implements" | "relates-to" | "depends-on" | "dol-requires" => false,
+            // A `require '../../main.inc.php'` fallback points at the out-of-tree
+            // Dolibarr core bootstrap -- expected, not a broken internal link.
+            "requires" => !is_bootstrap(&e.target),
             _ => true,
         })
-        // A target under `vendor/` is an out-of-repo dependency (Composer's
-        // gitignored tree) -- a `require vendor/autoload.php` / a phpstan
-        // `includes:` of a vendor extension, not a gap.
-        .filter(|e| !e.target.contains("vendor/"))
+        // Anything under `vendor/` is out-of-repo Composer code -- a `require
+        // vendor/autoload.php`, a phpstan `includes:` of a vendor extension, or a
+        // vendored library's own internal `require`. Not a gap, on either end.
+        .filter(|e| !e.target.contains("vendor/") && !e.source.contains("vendor/"))
         .collect();
     unresolved.sort_by(|a, b| a.target.cmp(&b.target));
 
@@ -590,9 +625,15 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         .filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str()))
         .filter(|n| !returns_value.contains(n.id.as_str()))
         // Template + asset files legitimately hold no code symbols -- not a gap.
+        // This includes Dolibarr's PHP-wrapped generated assets (`*.tpl.php`,
+        // `*.js.php`, `*.css.php`) whose extension reads as `php`.
         .filter(|n| {
             let ext = Path::new(&n.path).extension().and_then(|e| e.to_str()).unwrap_or("");
-            !NO_SYMBOL_EXTS.iter().any(|a| a.eq_ignore_ascii_case(ext)) && !n.path.ends_with(".blade.php")
+            !NO_SYMBOL_EXTS.iter().any(|a| a.eq_ignore_ascii_case(ext))
+                && !n.path.ends_with(".blade.php")
+                && !n.path.ends_with(".tpl.php")
+                && !n.path.ends_with(".js.php")
+                && !n.path.ends_with(".css.php")
         })
         .collect();
 

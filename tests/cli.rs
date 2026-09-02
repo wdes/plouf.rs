@@ -126,9 +126,19 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["callers", "dolibarr/class/widget.class.php", "--out", out_s]);
     assert!(o.contains("dol-requires\t"), "dolibarr dol_include_once: {o}");
 
-    // missing: the gaps report runs clean.
-    let (_, _, ok) = run(&["missing", "--out", out_s]);
+    // Dolibarr API route serves the implementing method node (not just the class).
+    let (o, _, _) = run(&["callers", "dolibarr/class/api_widget.class.php#Widgets.getByRef", "--out", out_s]);
+    assert!(o.contains("serves\t"), "api route serves the method: {o}");
+
+    // missing: the gaps report runs, and the Dolibarr de-noising holds.
+    let (o, _, ok) = run(&["missing", "--out", out_s]);
     assert!(ok, "missing failed");
+    // the `require '../main.inc.php'` bootstrap is expected, not a gap;
+    assert!(!o.contains("main.inc.php"), "bootstrap require excluded: {o}");
+    // .lang / .sql carry edges, not `contains` children -- not "empty files";
+    assert!(!o.contains(".lang") && !o.contains(".sql"), "lang/sql not empty: {o}");
+    // and framework entry points (the module descriptor) are not "dead".
+    assert!(!o.contains("modWidgetshop"), "descriptor not unreferenced: {o}");
 
     // grep: content search finds the concept even when the caller only knows the
     // task vocabulary ("bullet"), not the symbol name -- the enclosing symbol is

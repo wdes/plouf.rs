@@ -305,11 +305,14 @@ fn scan_api_routes(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edg
         let params = &code[i + 1..close];
         from = close;
 
+        // A route serves the specific implementing method node, so the endpoint
+        // method is not read as dead and `callers route:<path>` names the handler.
+        let method_id = format!("{rel}#{class}.{name}");
         let urls = url_tags(preceding_docblock(code, at));
         if !urls.is_empty() {
             for path in urls {
                 let route = normalize_route(&format!("{base_path}/{path}"));
-                mint_route(rel, &route, &class, &mut minted, nodes, edges);
+                mint_route(rel, &route, &method_id, &mut minted, nodes, edges);
             }
         } else if auto_route_verb(name).is_some() {
             let mut route = base_path.clone();
@@ -318,7 +321,7 @@ fn scan_api_routes(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edg
                 route.push_str(&p);
                 route.push('}');
             }
-            mint_route(rel, &normalize_route(&route), &class, &mut minted, nodes, edges);
+            mint_route(rel, &normalize_route(&route), &method_id, &mut minted, nodes, edges);
         }
     }
 }
@@ -407,11 +410,12 @@ fn normalize_route(path: &str) -> String {
     format!("/{}", path.trim_matches('/'))
 }
 
-/// Mint a shared `route:<path>` node (once) + a `serves` edge to the API class.
+/// Mint a shared `route:<path>` node (once) + a `serves` edge to `target` (the
+/// implementing method's node id).
 fn mint_route(
     rel: &str,
     route: &str,
-    class: &str,
+    target: &str,
     minted: &mut HashSet<String>,
     nodes: &mut Vec<Node>,
     edges: &mut Vec<RawEdge>,
@@ -420,7 +424,7 @@ fn mint_route(
     if minted.insert(id.clone()) {
         nodes.push(Node { id: id.clone(), name: route.to_string(), kind: "route", path: rel.to_string(), start: 0, end: 0 });
     }
-    edges.push(RawEdge::named(id, "serves", class.to_string()));
+    edges.push(RawEdge::named(id, "serves", target.to_string()));
 }
 
 /// Dolibarr SQL install files (`sql/llx_*.sql`, `.key.sql`): a `CREATE TABLE` or
@@ -1084,9 +1088,11 @@ mod tests {
         assert!(routes.contains("route:/products/{id}"), "auto GET/DELETE with a required id segment");
         assert!(routes.contains("route:/products"), "auto index/post at the resource root");
         assert!(!routes.iter().any(|r| r.contains("fetch")), "the private _fetch is not a route");
-        // Every route serves the API class.
+        // Every route serves the implementing method node (not just the class).
         let serves = edge_targets(&edges, "serves");
-        assert!(!serves.is_empty() && serves.iter().all(|t| *t == "Products"));
+        assert!(!serves.is_empty(), "routes serve something");
+        assert!(serves.iter().all(|t| t.contains("#Products.")), "serves the method: {serves:?}");
+        assert!(serves.iter().any(|t| t.ends_with("#Products.getByRef")), "explicit @url -> getByRef");
         // Layer A role gate from the class `@requires` tag.
         let roles = edge_targets(&edges, "requires-role");
         assert!(roles.contains(&"user") && roles.contains(&"external"), "api roles: {roles:?}");

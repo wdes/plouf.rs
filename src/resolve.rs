@@ -165,9 +165,11 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "extends" | "implements" | "covers" | "routes-to" => {
                 Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
             }
-            // Attribute routing: a `route:<path>` node -> the controller that
-            // serves it, resolved by unique class name (else kept raw -- a bare
-            // name resolves to the class, a file path to the file node).
+            // A `route:<path>` node -> what serves it. A Dolibarr API route names
+            // the implementing method node directly (an exact id); an attribute
+            // route names the controller class, resolved by unique name (else kept
+            // raw -- a bare name resolves to the class, a file path to the file).
+            "serves" if ids.contains(name) => Some(name.to_string()),
             "serves" => Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string)),
             // A `.gitattributes` export-ignore pattern -> the path it names (a
             // source file node, a `path` node when the target exists, else kept
