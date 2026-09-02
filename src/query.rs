@@ -180,6 +180,7 @@ fn is_reference(relation: &str) -> bool {
             | "fires-hook"
             | "handles-hook"
             | "declares-module"
+            | "relates-to"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 
@@ -288,7 +289,9 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         // What survives is genuinely-internal broken links.
         .filter(|e| match e.relation.as_str() {
             "imports" => e.target.starts_with('.'),
-            "extends" | "implements" => false,
+            // Heritage and `$fields` relations point at a base/related class that
+            // is usually a framework/core class outside the indexed tree.
+            "extends" | "implements" | "relates-to" => false,
             _ => true,
         })
         // A target under `vendor/` is an out-of-repo dependency (Composer's

@@ -56,6 +56,7 @@ pub fn scan(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mu
     scan_triggers(rel, code, nodes, edges);
     scan_hooks(rel, base, code, nodes, edges);
     scan_common_object(rel, code, nodes, edges);
+    scan_object_fields(rel, code, nodes, edges);
 }
 
 /// `mod<Name> extends DolibarrModules`: mint a `module:<rights_class>` node (the
@@ -72,11 +73,13 @@ fn scan_module(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<Raw
     edges.push(RawEdge::named(rel.to_string(), "declares-module", module));
 }
 
-/// `$user->hasRight('module','level1'[,'level2'])` -> a
-/// `right:<module>.<l1>[.<l2>]` node + a `checks-permission` edge. The module
-/// (first argument) must be a string literal; a dynamic `hasRight($m, ...)` is
-/// skipped.
+/// Permission checks, both forms Dolibarr uses. The modern
+/// `$user->hasRight('module','level1'[,'level2'])` (a string-literal module is
+/// required; a dynamic `hasRight($m, ...)` is skipped) and the legacy
+/// `$user->rights->module->level1[->level2]` property access. Both yield a
+/// `right:<module>.<l1>[.<l2>]` node + a `checks-permission` edge.
 fn scan_permissions(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    let bytes = code.as_bytes();
     let mut minted = HashSet::new();
     for_each_call(code, "hasRight", |args| {
         let parts = split_args(args);
@@ -90,8 +93,73 @@ fn scan_permissions(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Ve
             name.push('.');
             name.push_str(&l2);
         }
-        edges.push(RawEdge::named(rel.to_string(), "checks-permission", name.clone()));
-        mint(&mut minted, nodes, node(rel, "permission", &name));
+        emit_permission(rel, &name, &mut minted, nodes, edges);
+    });
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("rights->") {
+        let at = from + pos;
+        from = at + "rights->".len();
+        // Only the `$user->rights->` chain (always preceded by `->`), never a
+        // bare `$rights->` local variable.
+        if !(at >= 2 && &code[at - 2..at] == "->") {
+            continue;
+        }
+        let segs = property_chain(bytes, code, at + "rights->".len(), 3);
+        if segs.len() >= 2 {
+            emit_permission(rel, &segs.join("."), &mut minted, nodes, edges);
+        }
+    }
+}
+
+/// Emit a `checks-permission` edge to `right:<name>` and mint the node once.
+fn emit_permission(
+    rel: &str,
+    name: &str,
+    minted: &mut HashSet<String>,
+    nodes: &mut Vec<Node>,
+    edges: &mut Vec<RawEdge>,
+) {
+    edges.push(RawEdge::named(rel.to_string(), "checks-permission", name.to_string()));
+    mint(minted, nodes, node(rel, "permission", name));
+}
+
+/// `$fields` type sub-DSL on a `CommonObject`: `integer:Class:path/to.php[:...]`
+/// is an implicit belongs-to -> a `relates-to` edge to the class; `sellist:Table`
+/// / `chkbxlst:Table` is a dictionary lookup -> a `uses-table` edge. A plain
+/// `integer` (no relation) or a dynamic type is skipped.
+fn scan_object_fields(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    if !code.contains("$fields") {
+        return;
+    }
+    let mut minted = HashSet::new();
+    each_quoted(code, |lit| {
+        let mut parts = lit.split(':');
+        match parts.next() {
+            Some("integer") => {
+                if let Some(class) = parts.next().map(crate::php::dequalify) {
+                    if is_field_class(&class) {
+                        edges.push(RawEdge::named(rel.to_string(), "relates-to", class));
+                    }
+                }
+            }
+            Some("sellist" | "chkbxlst") => {
+                if let Some(raw) = parts.next() {
+                    let table = raw.strip_prefix("llx_").unwrap_or(raw);
+                    if !table.is_empty() {
+                        edges.push(RawEdge::named(rel.to_string(), "uses-table", table.to_string()));
+                        mint(&mut minted, nodes, Node {
+                            id: format!("table:{table}"),
+                            name: table.to_string(),
+                            kind: "table",
+                            path: rel.to_string(),
+                            start: 0,
+                            end: 0,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
     });
 }
 
@@ -401,6 +469,53 @@ fn defined_methods(code: &str) -> Vec<String> {
     out
 }
 
+/// The identifiers of a `->a->b->c` property chain starting at byte `i` (just
+/// past `rights->`), up to `max` segments.
+fn property_chain<'a>(bytes: &[u8], code: &'a str, mut i: usize, max: usize) -> Vec<&'a str> {
+    let mut segs = Vec::new();
+    while segs.len() < max {
+        let start = i;
+        while matches!(bytes.get(i), Some(b) if is_ident(*b)) {
+            i += 1;
+        }
+        if i == start {
+            break;
+        }
+        segs.push(&code[start..i]);
+        if code[i..].starts_with("->") {
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    segs
+}
+
+/// Call `f` with the content of every single/double-quoted string literal.
+fn each_quoted(code: &str, mut f: impl FnMut(&str)) {
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' || bytes[i] == b'"' {
+            let end = skip_string(bytes, i + 1, bytes[i]);
+            if end >= bytes.len() {
+                break;
+            }
+            f(&code[i + 1..end]);
+            i = end + 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Whether `s` looks like a class name (upper-case initial, identifier chars) --
+/// the relation target in an `integer:Class:...` field type.
+fn is_field_class(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -438,6 +553,51 @@ mod tests {
         assert!(perms.contains(&"produit.lire"), "two-level right");
         assert_eq!(perms.len(), 2, "the dynamic module call is skipped");
         assert!(nodes.iter().any(|n| n.kind == "permission" && n.id == "right:produit.lire"));
+    }
+
+    #[test]
+    fn permissions_from_legacy_rights_property() {
+        let code = r"<?php
+            if ($user->rights->widgetshop->read) {
+                // two-level property form
+            }
+            if (empty($user->rights->stock->import->create)) {
+                accessforbidden();
+            }
+            // a bare $rights local variable must NOT be read as a permission
+            if ($rights->something->else) {
+                return;
+            }
+        ";
+        let (nodes, edges) = run("acme/widget_list.php", "widget_list.php", code);
+        let perms = edge_targets(&edges, "checks-permission");
+        assert!(perms.contains(&"widgetshop.read"), "two-level property right");
+        assert!(perms.contains(&"stock.import.create"), "three-level property right");
+        assert!(!perms.contains(&"something.else"), "a bare $rights var is not a permission");
+        assert!(nodes.iter().any(|n| n.kind == "permission" && n.id == "right:stock.import.create"));
+    }
+
+    #[test]
+    fn object_fields_link_related_class_and_dictionary_table() {
+        let code = r"<?php
+            class Invoice extends CommonObject
+            {
+                public $table_element = 'facture';
+                public $fields = array(
+                    'rowid'   => array('type' => 'integer'),
+                    'fk_soc'  => array('type' => 'integer:Societe:societe/class/societe.class.php:1:filter'),
+                    'country' => array('type' => 'sellist:c_country:label:rowid'),
+                );
+            }
+        ";
+        let (nodes, edges) = run("acme/class/invoice.class.php", "invoice.class.php", code);
+        // `integer:Class:path` -> a relates-to edge to the class (a belongs-to).
+        assert!(edge_targets(&edges, "relates-to").contains(&"Societe"), "FK field relation");
+        // a plain `integer` type carries no relation.
+        assert!(!edge_targets(&edges, "relates-to").contains(&"integer"));
+        // `sellist:Table` -> a uses-table edge to the dictionary table.
+        assert!(edge_targets(&edges, "uses-table").contains(&"c_country"), "sellist table");
+        assert!(nodes.iter().any(|n| n.kind == "table" && n.id == "table:c_country"));
     }
 
     #[test]

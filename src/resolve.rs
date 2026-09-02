@@ -206,6 +206,8 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "raises-trigger" | "handles-trigger" => Some(format!("trigger:{name}")),
             "fires-hook" | "handles-hook" => Some(format!("hook:{name}")),
             "declares-module" => Some(format!("module:{name}")),
+            // A `$fields` `integer:Class:...` FK -> the related class by name.
+            "relates-to" => Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string)),
             // A PHP file registers a custom Twig function -> its `twigfn:` node.
             "defines-fn" => Some(format!("twigfn:{name}")),
             // A Twig template calls one -> the node, but only if it was actually
