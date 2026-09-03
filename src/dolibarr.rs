@@ -546,7 +546,7 @@ fn is_trigger_action(s: &str) -> bool {
 
 /// Index of the `)` matching the `(` at `open`, respecting nested parens and
 /// single/double-quoted strings. `None` if unbalanced.
-fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+const fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0i32;
     let mut i = open;
     while i < bytes.len() {
@@ -568,7 +568,7 @@ fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
 
 /// Index of the closing quote `q` (starting at `i`, just past the opener),
 /// honouring backslash escapes; the byte index of the closing quote.
-fn skip_string(bytes: &[u8], mut i: usize, q: u8) -> usize {
+const fn skip_string(bytes: &[u8], mut i: usize, q: u8) -> usize {
     while i < bytes.len() && bytes[i] != q {
         if bytes[i] == b'\\' {
             i += 1;
