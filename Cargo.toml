@@ -1,6 +1,6 @@
 [package]
 name = "plouf-rs"
-version = "0.3.0"
+version = "0.3.1-dev"
 edition = "2021"
 description = "A deterministic code-graph for a polyglot repo (PHP via Mago, JS/TS/Vue via oxc): index it, then query symbols, signatures, bodies, callers, and gaps."
 license = "MPL-2.0"
