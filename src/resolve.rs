@@ -208,9 +208,9 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "raises-trigger" | "handles-trigger" => Some(format!("trigger:{name}")),
             "fires-hook" | "handles-hook" => Some(format!("hook:{name}")),
             "declares-module" => Some(format!("module:{name}")),
-            // A `$fields` `integer:Class:...` FK, or a descriptor `depends`
-            // module -> the related/dependency class by name.
-            "relates-to" | "depends-on" => {
+            // A `$fields` `integer:Class:...` FK, a descriptor `depends` module,
+            // or a `cronjobs` target -> the related/dependency/cron class by name.
+            "relates-to" | "depends-on" | "schedules" => {
                 Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
             }
             // An API class' `@requires` role gate -> the shared `role:<name>` node.

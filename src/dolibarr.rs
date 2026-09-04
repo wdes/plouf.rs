@@ -49,6 +49,28 @@ const HOOK_METHODS: &[&str] = &[
     "restrictedArea",
 ];
 
+/// Whether `name` is a Dolibarr hook a handler class implements: a known hook
+/// name, or a member of a hook family -- `pdf_*` document hooks, `dashboard*`
+/// widgets, `printField*` list-column hooks, or the login hooks (all fired by
+/// core, so their handlers would otherwise read as dead).
+fn is_hook_method(name: &str) -> bool {
+    HOOK_METHODS.contains(&name)
+        || name.starts_with("pdf_")
+        || name.starts_with("dashboard")
+        || name.starts_with("printField")
+        || matches!(
+            name,
+            "afterLogin"
+                | "afterLoginFailed"
+                | "beforeLoginAuthentication"
+                | "beforePDFCreation"
+                | "afterPDFCreation"
+                | "createFrom"
+                | "formButtonsList"
+                | "getnomurltooltip"
+        )
+}
+
 /// Run every Dolibarr scanner over one PHP file, appending to `nodes`/`edges`.
 pub fn scan(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
     scan_module(rel, code, nodes, edges);
@@ -77,6 +99,11 @@ fn scan_module(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<Raw
     // to each required module's descriptor class.
     for dep in assigned_array_strings(code, "depends") {
         edges.push(RawEdge::named(rel.to_string(), "depends-on", dep));
+    }
+    // A `cronjobs` entry (`'objectname' => 'X', 'method' => 'doJob'`) -> a
+    // `schedules` edge to the cron target class, so it is not read as dead code.
+    for target in array_key_values(code, "objectname") {
+        edges.push(RawEdge::named(rel.to_string(), "schedules", target));
     }
 }
 
@@ -207,9 +234,11 @@ fn scan_hooks(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &
         mint(&mut minted, nodes, node(rel, "hook", &method));
     });
     // A hook handler class lives at actions_<module>.class.php (or extends the
-    // core CommonHookActions base). Its methods named like a known hook handle it.
+    // core CommonHookActions base). Its methods named like a Dolibarr hook -- a
+    // known name or a hook family (`pdf_*`, `dashboard*`, `printField*`, login) --
+    // handle that hook, including hooks fired only by core (e.g. afterLogin).
     if base.starts_with("actions_") || code.contains("CommonHookActions") {
-        for method in defined_methods(code).into_iter().filter(|m| HOOK_METHODS.contains(&m.as_str())) {
+        for method in defined_methods(code).into_iter().filter(|m| is_hook_method(m)) {
             edges.push(RawEdge::named(rel.to_string(), "handles-hook", method.clone()));
             mint(&mut minted, nodes, node(rel, "hook", &method));
         }
@@ -819,6 +848,29 @@ fn assigned_array_strings(code: &str, prop: &str) -> Vec<String> {
     Vec::new()
 }
 
+/// The string values of every `'<key>' => '<value>'` array entry in `code` (an
+/// array key immediately followed by `=> '...'`). Used to pull `objectname`
+/// targets out of a descriptor's `cronjobs` array.
+fn array_key_values(code: &str, key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find(key) {
+        let at = from + pos;
+        from = at + key.len();
+        let rest = &code[at + key.len()..];
+        // The key and its `=>` must be adjacent (an array key, not a stray word).
+        let Some(arrow) = rest.find("=>") else { continue };
+        if arrow > 4 {
+            continue;
+        }
+        let seg = &rest[arrow + 2..rest.len().min(arrow + 2 + 80)];
+        if let Some(value) = first_quoted(seg) {
+            out.push(value);
+        }
+    }
+    out
+}
+
 /// The roles in a `@class DolibarrApiAccess {@requires user,external}` class tag.
 /// Empty unless the tag's class key is literally `DolibarrApiAccess` (matching
 /// Dolibarr's own `verifyAccess`, which ignores any other key).
@@ -995,6 +1047,52 @@ mod tests {
         assert!(hits.contains(&"formObjectOptions"), "a known hook method handles the hook");
         assert!(!hits.contains(&"computeSomethingPrivate"), "a plain helper is not a hook");
         assert!(nodes.iter().any(|n| n.kind == "hook" && n.id == "hook:formObjectOptions"));
+    }
+
+    #[test]
+    fn hook_handler_recognises_pdf_login_and_family_methods() {
+        let code = r"<?php
+            class ActionsX extends CommonHookActions
+            {
+                public function formObjectOptions($parameters, &$object, &$action) { return 0; }
+                public function pdf_writelinedesc($parameters, &$pdf) { return 0; }
+                public function afterLogin($parameters, &$user) { return 0; }
+                public function dashboardWidgets($parameters) { return 0; }
+                public function computeStuff($value) { return $value + 1; }
+            }
+        ";
+        let (_, edges) = run("acme/class/actions_x.class.php", "actions_x.class.php", code);
+        let hooks = edge_targets(&edges, "handles-hook");
+        assert!(hooks.contains(&"formObjectOptions"), "curated hook");
+        assert!(hooks.contains(&"pdf_writelinedesc"), "pdf_ document-hook family");
+        assert!(hooks.contains(&"afterLogin"), "core-fired login hook");
+        assert!(hooks.contains(&"dashboardWidgets"), "dashboard widget family");
+        assert!(!hooks.contains(&"computeStuff"), "a plain helper is not a hook");
+    }
+
+    #[test]
+    fn cronjobs_schedule_the_target_class() {
+        let code = r"<?php
+            class modWidgetshop extends DolibarrModules
+            {
+                public function __construct($db)
+                {
+                    $this->rights_class = 'widgetshop';
+                    $this->cronjobs = array(
+                        0 => array(
+                            'label' => 'Nightly sync',
+                            'jobtype' => 'method',
+                            'class' => '/widgetshop/class/batchwidget.class.php',
+                            'objectname' => 'BatchWidget',
+                            'method' => 'doScheduledJob',
+                            'frequency' => 1,
+                        ),
+                    );
+                }
+            }
+        ";
+        let (_, edges) = run("widgetshop/core/modules/modWidgetshop.class.php", "modWidgetshop.class.php", code);
+        assert!(edge_targets(&edges, "schedules").contains(&"BatchWidget"), "cron target class linked");
     }
 
     #[test]

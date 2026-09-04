@@ -349,6 +349,7 @@ fn is_reference(relation: &str) -> bool {
             | "depends-on"
             | "requires-role"
             | "dol-requires"
+            | "schedules"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 
@@ -599,7 +600,7 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             // base/related/dependency class usually outside the indexed tree; a
             // `dol_include_once` of another module's file is likewise expected to
             // be unresolvable in a standalone index. None are gaps.
-            "extends" | "implements" | "relates-to" | "depends-on" | "dol-requires" => false,
+            "extends" | "implements" | "relates-to" | "depends-on" | "dol-requires" | "schedules" => false,
             // A `require '../../main.inc.php'` fallback points at the out-of-tree
             // Dolibarr core bootstrap -- expected, not a broken internal link.
             "requires" => !is_bootstrap(&e.target),

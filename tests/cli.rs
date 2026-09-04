@@ -118,6 +118,14 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["find", "role:", "--out", out_s]);
     assert!(o.contains("role:user"), "dolibarr api role: {o}");
 
+    // Dolibarr cron: a descriptor `cronjobs` objectname schedules its target class.
+    let (o, _, _) = run(&["callers", "dolibarr/class/widgetshopcron.class.php#WidgetShopCron", "--out", out_s]);
+    assert!(o.contains("schedules\t"), "dolibarr cronjob target: {o}");
+
+    // Dolibarr hook broadening: a core-fired hook (afterLogin) handler is linked.
+    let (o, _, _) = run(&["callers", "hook:afterLogin", "--out", out_s]);
+    assert!(o.contains("handles-hook\t"), "dolibarr core-fired hook handler: {o}");
+
     // Dolibarr .lang key definition surfaces via `uses` (defined + used).
     let (o, _, _) = run(&["uses", "WidgetShelfLabel", "--out", out_s]);
     assert!(o.contains("widgetshop.lang") && o.contains("widget_card.php"), "dolibarr lang key: {o}");

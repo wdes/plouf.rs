@@ -11,6 +11,17 @@ class modWidgetshop extends DolibarrModules
         $this->rights_class = 'widgetshop';
         $this->family = 'products';
         $this->module_parts = array('hooks' => array('data' => array('widgetcard')));
+        $this->cronjobs = array(
+            0 => array(
+                'label' => 'Revalidate widgets',
+                'jobtype' => 'method',
+                'class' => '/dolibarr/class/widgetshopcron.class.php',
+                'objectname' => 'WidgetShopCron',
+                'method' => 'doScheduledJob',
+                'frequency' => 1,
+                'unitfrequency' => 86400,
+            ),
+        );
     }
 
     public function init($options = '')
