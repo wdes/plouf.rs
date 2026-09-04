@@ -242,7 +242,9 @@ fn run(root: &str, out_dir: &str) -> Result<Summary, std::io::Error> {
         true
     });
 
-    let resolved = resolve::resolve(&nodes, &edges);
+    // Composer psr-4 map lets namespaced imports resolve to the exact file.
+    let psr4 = resolve::read_psr4(std::path::Path::new(root));
+    let resolved = resolve::resolve(&nodes, &edges, psr4);
     drop(edges); // raw edges are consumed; free them before serializing
 
     let graph_dir = format!("{out_dir}/.graph");

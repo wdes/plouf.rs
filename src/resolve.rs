@@ -32,10 +32,11 @@ struct Index<'a> {
     parents: HashMap<&'a str, Vec<&'a str>>,                 // class name -> base names
     files: HashSet<&'a str>,                                 // every file node's rel path
     uses: HashMap<&'a str, HashMap<&'a str, &'a str>>,       // file -> (short name -> FQCN)
+    psr4: Vec<(String, String)>,                            // composer psr-4: (FQCN prefix, dir)
 }
 
 impl<'a> Index<'a> {
-    fn build(nodes: &'a [Node], edges: &'a [RawEdge]) -> Self {
+    fn build(nodes: &'a [Node], edges: &'a [RawEdge], psr4: Vec<(String, String)>) -> Self {
         let mut by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut path_by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut owner: HashMap<&str, HashMap<&str, Vec<&str>>> = HashMap::new();
@@ -80,7 +81,29 @@ impl<'a> Index<'a> {
                 }
             }
         }
-        Self { by_name, path_by_name, owner, method_by_name, parents, files, uses }
+        Self { by_name, path_by_name, owner, method_by_name, parents, files, uses, psr4 }
+    }
+
+    /// Resolve a fully-qualified class name to a file node via the composer
+    /// `psr-4` map: strip the longest matching namespace prefix, map the rest onto
+    /// the prefix's directory (`Wdes\ImportProduits\Http\Router` + `Wdes\
+    /// ImportProduits\ => src/` -> `src/Http/Router.php`), and keep it only if
+    /// that file exists. `None` when no prefix matches or the file is absent.
+    fn resolve_fqcn(&self, name: &str) -> Option<&'a str> {
+        let fqcn = name.trim_start_matches('\\');
+        let mut best: Option<&'a str> = None;
+        let mut best_len = 0;
+        for (prefix, dir) in &self.psr4 {
+            if fqcn.len() > prefix.len() && fqcn.starts_with(prefix.as_str()) && prefix.len() >= best_len {
+                let rest = fqcn[prefix.len()..].replace('\\', "/");
+                let cand = format!("{dir}{rest}.php");
+                if let Some(hit) = self.files.get(cand.as_str()) {
+                    best = Some(hit);
+                    best_len = prefix.len();
+                }
+            }
+        }
+        best
     }
 
     fn unique(map: &HashMap<&'a str, Vec<&'a str>>, key: &str) -> Option<&'a str> {
@@ -142,9 +165,12 @@ impl<'a> Index<'a> {
     }
 }
 
-/// Resolve every raw edge to a deduplicated `ResolvedEdge` list.
-pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
-    let idx = Index::build(nodes, edges);
+/// Resolve every raw edge to a deduplicated `ResolvedEdge` list. `psr4` is the
+/// composer `psr-4` map (FQCN prefix -> directory, from [`read_psr4`]) so
+/// namespaced `use` imports resolve to the exact file by FQCN rather than a
+/// globally-unique basename; pass an empty vec when there is none.
+pub fn resolve(nodes: &[Node], edges: &[RawEdge], psr4: Vec<(String, String)>) -> Vec<ResolvedEdge> {
+    let idx = Index::build(nodes, edges, psr4);
     let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     let mut out = Vec::new();
     let mut seen: HashSet<(&str, &'static str, String)> = HashSet::new();
@@ -156,10 +182,15 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "imports" if name.starts_with('.') => {
                 Some(resolve_relative(&e.source, name, &idx.files).unwrap_or_else(|| name.to_string()))
             }
-            "imports" => {
-                let last = name.rsplit('\\').next().unwrap_or(name);
-                Some(Index::unique(&idx.path_by_name, last).map_or_else(|| name.to_string(), str::to_string))
-            }
+            // A PSR-4 FQCN maps to its exact file; else fall back to the globally
+            // unique basename (masks a collision, but the best without psr-4).
+            "imports" => Some(idx.resolve_fqcn(name).map_or_else(
+                || {
+                    let last = name.rsplit('\\').next().unwrap_or(name);
+                    Index::unique(&idx.path_by_name, last).map_or_else(|| name.to_string(), str::to_string)
+                },
+                str::to_string,
+            )),
             // Heritage, PHPUnit covers, + a route file -> the controller class it
             // wires, all resolve to a class/function node by unique name.
             "extends" | "implements" | "covers" | "routes-to" => {
@@ -244,6 +275,51 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
         if let Some(t) = target {
             if seen.insert((e.source.as_str(), e.relation, t.clone())) {
                 out.push(ResolvedEdge { source: e.source.clone(), target: t, relation: e.relation });
+            }
+        }
+    }
+    out
+}
+
+/// The composer `psr-4` map for a tree: every `composer.json`'s
+/// `autoload`/`autoload-dev` `psr-4` entries, as `(FQCN prefix, dir)` with the
+/// dir made repo-root-relative (so a nested module's `composer.json` maps into
+/// its own subtree). Honours `.gitignore`, so a vendored `composer.json` under
+/// `vendor/` is skipped.
+pub fn read_psr4(root: &std::path::Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for entry in ignore::WalkBuilder::new(root).hidden(false).build().flatten() {
+        if entry.file_name() != "composer.json" {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let base = entry
+            .path()
+            .parent()
+            .and_then(|p| p.strip_prefix(root).ok())
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        for section in ["autoload", "autoload-dev"] {
+            let Some(map) = v[section]["psr-4"].as_object() else { continue };
+            for (prefix, dir) in map {
+                let dirs: Vec<&str> = match dir {
+                    serde_json::Value::String(s) => vec![s.as_str()],
+                    serde_json::Value::Array(a) => a.iter().filter_map(serde_json::Value::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                for d in dirs {
+                    let mut path = String::new();
+                    if !base.is_empty() {
+                        path.push_str(&base);
+                        path.push('/');
+                    }
+                    path.push_str(d.trim_end_matches('/'));
+                    if !path.is_empty() {
+                        path.push('/');
+                    }
+                    out.push((prefix.clone(), path));
+                }
             }
         }
     }
@@ -398,7 +474,7 @@ mod tests {
             node("b.php#baz", "baz", "function"),
         ];
         let edges = vec![RawEdge::call("a.php#Foo.bar".to_string(), "baz".to_string(), false, None)];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         assert_eq!(call_target(&resolved, "a.php#Foo.bar"), Some("b.php#baz"));
     }
 
@@ -411,7 +487,7 @@ mod tests {
         ];
         let edges =
             vec![RawEdge::call("a.php#Foo.bar".to_string(), "qux".to_string(), true, Some("Foo".to_string()))];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         assert_eq!(call_target(&resolved, "a.php#Foo.bar"), Some("a.php#Foo.qux"));
     }
 
@@ -419,7 +495,7 @@ mod tests {
     fn drops_unresolved_member_call() {
         let nodes = vec![node("a.php#Foo.bar", "bar", "method")];
         let edges = vec![RawEdge::call("a.php#Foo.bar".to_string(), "unknown".to_string(), true, None)];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         assert!(resolved.iter().all(|e| e.relation != "calls"));
     }
 
@@ -431,10 +507,10 @@ mod tests {
         ];
         // ->active() on a User receiver maps to scopeActive -- the scope exists.
         let hit = vec![RawEdge::call("a.php#X.f".to_string(), "active".to_string(), true, Some("User".to_string()))];
-        assert_eq!(call_target(&resolve(&nodes, &hit), "a.php#X.f"), Some("app/User.php#User.scopeActive"));
+        assert_eq!(call_target(&resolve(&nodes, &hit, Vec::new()), "a.php#X.f"), Some("app/User.php#User.scopeActive"));
         // ->missing() has NO scopeMissing method -> dropped, never a blind rename.
         let miss = vec![RawEdge::call("a.php#X.f".to_string(), "missing".to_string(), true, Some("User".to_string()))];
-        assert!(resolve(&nodes, &miss).iter().all(|e| e.relation != "calls"));
+        assert!(resolve(&nodes, &miss, Vec::new()).iter().all(|e| e.relation != "calls"));
     }
 
     #[test]
@@ -449,7 +525,7 @@ mod tests {
             RawEdge::named("a.php#Child".to_string(), "extends", "Base".to_string()),
             RawEdge::call("a.php#Child.f".to_string(), "m".to_string(), true, Some("Child".to_string())),
         ];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         assert_eq!(call_target(&resolved, "a.php#Child.f"), Some("b.php#Base.m"));
     }
 
@@ -457,7 +533,7 @@ mod tests {
     fn resolves_heritage_by_unique_name() {
         let nodes = vec![node("a.php#Child", "Child", "class"), node("b.php#Base", "Base", "class")];
         let edges = vec![RawEdge::named("a.php#Child".to_string(), "extends", "Base".to_string())];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         let target = resolved.iter().find(|e| e.relation == "extends").map(|e| e.target.as_str());
         assert_eq!(target, Some("b.php#Base"));
     }
@@ -466,7 +542,7 @@ mod tests {
     fn resolves_relative_js_import_to_file() {
         let nodes = vec![node("resources/js/a.ts", "a.ts", "file"), node("resources/js/b.ts", "b.ts", "file")];
         let edges = vec![RawEdge::named("resources/js/a.ts".to_string(), "imports", "./b".to_string())];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         let target = resolved.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str());
         assert_eq!(target, Some("resources/js/b.ts"));
     }
@@ -477,7 +553,7 @@ mod tests {
         // the written `.js` extension refers to the `.ts` source.
         let nodes = vec![node("resources/js/a.ts", "a.ts", "file"), node("resources/js/api/client.ts", "client.ts", "file")];
         let edges = vec![RawEdge::named("resources/js/a.ts".to_string(), "imports", "./api/client.js".to_string())];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         let target = r.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str());
         assert_eq!(target, Some("resources/js/api/client.ts"));
     }
@@ -486,9 +562,26 @@ mod tests {
     fn keeps_unresolved_bare_import_name() {
         let nodes = vec![node("resources/js/a.ts", "a.ts", "file")];
         let edges = vec![RawEdge::named("resources/js/a.ts".to_string(), "imports", "vue".to_string())];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         let target = resolved.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str());
         assert_eq!(target, Some("vue"));
+    }
+
+    #[test]
+    fn psr4_import_resolves_fqcn_over_basename_collision() {
+        // Two classes share the basename `Request`; without psr-4 the import stays
+        // an unresolved raw FQCN. The psr-4 map picks the exact app file.
+        let nodes = vec![
+            node("src/Http/Request/Request.php", "Request.php", "file"),
+            node("lib/psr7/Request.php", "Request.php", "file"),
+            node("src/Http/Router.php", "Router.php", "file"),
+        ];
+        let edges =
+            vec![RawEdge::named("src/Http/Router.php".to_string(), "imports", "Acme\\Http\\Request\\Request".to_string())];
+        let psr4 = vec![("Acme\\".to_string(), "src/".to_string())];
+        let resolved = super::resolve(&nodes, &edges, psr4);
+        let target = resolved.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str());
+        assert_eq!(target, Some("src/Http/Request/Request.php"), "psr-4 maps the FQCN to its exact file");
     }
 
     #[test]
@@ -496,13 +589,13 @@ mod tests {
         // relative import resolving through `/index.*`
         let nodes = vec![node("a/b.ts", "b.ts", "file"), node("a/x/index.ts", "index.ts", "file")];
         let edges = vec![RawEdge::named("a/b.ts".to_string(), "imports", "./x".to_string())];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert_eq!(r.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str()), Some("a/x/index.ts"));
 
         // a dotted Blade view resolves to its `.blade.php` file
         let nodes = vec![node("resources/views/layouts/app.blade.php", "app.blade.php", "file")];
         let edges = vec![RawEdge::named("v.blade.php".to_string(), "includes", "layouts.app".to_string())];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert_eq!(
             r.iter().find(|e| e.relation == "includes").map(|e| e.target.as_str()),
             Some("resources/views/layouts/app.blade.php")
@@ -511,7 +604,7 @@ mod tests {
         // an unresolvable relative import keeps the raw specifier
         let nodes = vec![node("a/b.ts", "b.ts", "file")];
         let edges = vec![RawEdge::named("a/b.ts".to_string(), "imports", "./nope".to_string())];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert_eq!(r.iter().find(|e| e.relation == "imports").map(|e| e.target.as_str()), Some("./nope"));
     }
 
@@ -527,7 +620,7 @@ mod tests {
             RawEdge::named("app/Company.php#Company".to_string(), "table", "companies".to_string()),
             RawEdge::named("db/m.php".to_string(), "migrates", "companies".to_string()),
         ];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Company.php#Company"));
         assert!(r.iter().any(|e| e.relation == "table" && e.target == "table:companies"));
         assert!(r.iter().any(|e| e.relation == "migrates" && e.target == "table:companies"));
@@ -538,7 +631,7 @@ mod tests {
         let nodes = vec![node("app/Models/Step.php#Step", "Step", "class")];
         // `belongsTo(self::class)` on Step points back at Step.
         let edges = vec![RawEdge::named("app/Models/Step.php#Step".to_string(), "belongsTo", "self".to_string())];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Models/Step.php#Step"));
     }
 
@@ -556,18 +649,18 @@ mod tests {
             RawEdge::named("app/Models/Company.php".to_string(), "imports", "App\\Models\\Address".to_string()),
             RawEdge::named("app/Models/Company.php#Company".to_string(), "belongsTo", "Address".to_string()),
         ];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert!(r.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Models/Address.php#Address"));
 
         // Same-namespace reference with NO use import: the candidate in the same
         // directory as the referencing file wins (current namespace resolved first).
         let edges3 = vec![RawEdge::named("app/Models/Contact.php#Contact".to_string(), "belongsTo", "Address".to_string())];
-        let r3 = resolve(&nodes, &edges3);
+        let r3 = resolve(&nodes, &edges3, Vec::new());
         assert!(r3.iter().any(|e| e.relation == "belongsTo" && e.target == "app/Models/Address.php#Address"));
 
         // Neither a use nor a same-dir candidate: an ambiguous name stays raw.
         let edges2 = vec![RawEdge::named("app/x.php#X".to_string(), "belongsTo", "Address".to_string())];
-        let r2 = resolve(&nodes, &edges2);
+        let r2 = resolve(&nodes, &edges2, Vec::new());
         assert!(r2.iter().any(|e| e.relation == "belongsTo" && e.target == "Address"));
     }
 
@@ -578,7 +671,7 @@ mod tests {
             RawEdge::named(".gitattributes".to_string(), "export-ignores", ".github".to_string()),
             RawEdge::named(".gitattributes".to_string(), "export-ignores", "gone.txt".to_string()),
         ];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         let targets: Vec<&str> =
             r.iter().filter(|e| e.relation == "export-ignores").map(|e| e.target.as_str()).collect();
         assert!(targets.contains(&".github")); // existing path -> resolves to the node
@@ -596,7 +689,7 @@ mod tests {
             RawEdge::named("phpcs.xml".to_string(), "configures", "standard/FooSniff.php".to_string()),
             RawEdge::named("phpstan.neon".to_string(), "configures", "BarRule".to_string()),
         ];
-        let r = resolve(&nodes, &edges);
+        let r = resolve(&nodes, &edges, Vec::new());
         assert!(r.iter().any(|e| e.relation == "configures" && e.target == "standard/FooSniff.php"));
         assert!(r.iter().any(|e| e.relation == "configures" && e.target == "standard/BarRule.php#BarRule"));
     }
@@ -608,7 +701,7 @@ mod tests {
             RawEdge::call("a.php".to_string(), "baz".to_string(), false, None),
             RawEdge::call("a.php".to_string(), "baz".to_string(), false, None),
         ];
-        let resolved = resolve(&nodes, &edges);
+        let resolved = resolve(&nodes, &edges, Vec::new());
         assert_eq!(resolved.iter().filter(|e| e.relation == "calls").count(), 1);
     }
 }
