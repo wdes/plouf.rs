@@ -350,6 +350,7 @@ fn is_reference(relation: &str) -> bool {
             | "requires-role"
             | "dol-requires"
             | "schedules"
+            | "menu-page"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 
@@ -534,7 +535,11 @@ fn is_bootstrap(target: &str) -> bool {
 /// models, `ModeleBoxes` widgets, module descriptors, triggers, hook handlers,
 /// API classes) -- live in production but never called from indexed code.
 fn is_framework_base(name: &str) -> bool {
-    let base = name.rsplit('\\').next().unwrap_or(name);
+    // The target may be an out-of-tree bare name (`ModeleNumRef`) or a resolved
+    // in-repo node id (`path#ModeleNumRefFoo`) when a module defines its own
+    // abstract base -- reduce both to the bare class name first.
+    let base = name.rsplit('#').next().unwrap_or(name);
+    let base = base.rsplit('\\').next().unwrap_or(base);
     base.starts_with("Modele")
         || matches!(base, "DolibarrModules" | "DolibarrTriggers" | "CommonHookActions" | "DolibarrApi")
 }
@@ -580,6 +585,9 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
         })
         .filter(|n| !referenced.contains(n.id.as_str()))
         .filter(|n| !is_entry(&n.id))
+        // Vendored Composer code (a per-module `vendor/` tree) is out-of-repo --
+        // its symbols are not the project's dead code.
+        .filter(|n| !n.id.contains("vendor/"))
         .collect();
 
     let mut unresolved: Vec<&EdgeRec> = graph
@@ -600,7 +608,8 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             // base/related/dependency class usually outside the indexed tree; a
             // `dol_include_once` of another module's file is likewise expected to
             // be unresolvable in a standalone index. None are gaps.
-            "extends" | "implements" | "relates-to" | "depends-on" | "dol-requires" | "schedules" => false,
+            "extends" | "implements" | "relates-to" | "depends-on" | "dol-requires" | "schedules"
+            | "menu-page" => false,
             // A `require '../../main.inc.php'` fallback points at the out-of-tree
             // Dolibarr core bootstrap -- expected, not a broken internal link.
             "requires" => !is_bootstrap(&e.target),
@@ -615,16 +624,16 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
 
     let has_children: HashSet<&str> =
         graph.edges.iter().filter(|e| e.relation == "contains").map(|e| e.source.as_str()).collect();
-    // Files whose whole purpose is to `return` a value at file scope (a
-    // `config/*.php` array, `bootstrap/app.php`): they declare no symbols by
-    // design, so they are not "empty/broken" -- exclude them from the report.
-    let returns_value: HashSet<&str> =
-        graph.edges.iter().filter(|e| e.relation == "returns").map(|e| e.source.as_str()).collect();
+    // A file that is the source of any non-`contains` edge is wired into the
+    // graph (a procedural Dolibarr page: `require`s, `calls`, a file-scope
+    // `return`, ...) -- it declares no symbols by design, not a parse failure.
+    let wired: HashSet<&str> =
+        graph.edges.iter().filter(|e| e.relation != "contains").map(|e| e.source.as_str()).collect();
     let empty_files: Vec<&NodeRec> = graph
         .nodes
         .iter()
         .filter(|n| n.kind == "file" && !has_children.contains(n.id.as_str()))
-        .filter(|n| !returns_value.contains(n.id.as_str()))
+        .filter(|n| !wired.contains(n.id.as_str()))
         // Template + asset files legitimately hold no code symbols -- not a gap.
         // This includes Dolibarr's PHP-wrapped generated assets (`*.tpl.php`,
         // `*.js.php`, `*.css.php`) whose extension reads as `php`.
@@ -661,9 +670,20 @@ fn report(title: &str, items: impl Iterator<Item = String>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        base_name, collect_tests, collect_twins, levenshtein, resolve, smallest_containing,
-        source_slice, suggest, truncate_body, EdgeRec, Graph, NodeRec,
+        base_name, collect_tests, collect_twins, is_framework_base, levenshtein, resolve,
+        smallest_containing, source_slice, suggest, truncate_body, EdgeRec, Graph, NodeRec,
     };
+
+    #[test]
+    fn framework_base_matches_bare_and_resolved_ids() {
+        assert!(is_framework_base("ModeleNumRef"), "out-of-tree bare base");
+        assert!(is_framework_base("DolibarrModules"));
+        // A module-local base resolves to a `path#Name` id -- still recognised.
+        assert!(is_framework_base("mod/core/x.php#ModeleNumRefFoo"), "in-repo qualified id");
+        assert!(is_framework_base("App\\PDF\\ModelePDFBar"), "namespaced");
+        assert!(!is_framework_base("SomeController"));
+        assert!(!is_framework_base("a/b.php#PlainClass"));
+    }
 
     fn edge(source: &str, target: &str, relation: &str) -> EdgeRec {
         EdgeRec { source: source.to_string(), target: target.to_string(), relation: relation.to_string() }

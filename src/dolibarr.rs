@@ -105,6 +105,26 @@ fn scan_module(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<Raw
     for target in array_key_values(code, "objectname") {
         edges.push(RawEdge::named(rel.to_string(), "schedules", target));
     }
+    // Menu entries (`'url' => '/mod/page.php?...'`) and tab entries (the
+    // `objecttype:+tab:Title:lang:perm:/mod/page.php` `data` string) -> a
+    // `menu-page` edge to the page file the descriptor registers.
+    for url in array_key_values(code, "url") {
+        push_menu_page(rel, &url, edges);
+    }
+    for data in array_key_values(code, "data") {
+        if let Some(seg) = data.split(':').find(|s| s.starts_with('/') && s.contains(".php")) {
+            push_menu_page(rel, seg, edges);
+        }
+    }
+}
+
+/// Emit a `menu-page` edge to the in-repo page a menu/tab `url` points at, if it
+/// is a `.php` page (query string stripped, leading `/` trimmed).
+fn push_menu_page(rel: &str, url: &str, edges: &mut Vec<RawEdge>) {
+    let path = url.split('?').next().unwrap_or(url).trim_start_matches('/');
+    if std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("php")) {
+        edges.push(RawEdge::named(rel.to_string(), "menu-page", path.to_string()));
+    }
 }
 
 /// Permission checks, both forms Dolibarr uses. The modern
@@ -852,11 +872,19 @@ fn assigned_array_strings(code: &str, prop: &str) -> Vec<String> {
 /// array key immediately followed by `=> '...'`). Used to pull `objectname`
 /// targets out of a descriptor's `cronjobs` array.
 fn array_key_values(code: &str, key: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(pos) = code[from..].find(key) {
         let at = from + pos;
         from = at + key.len();
+        // Match the exact array-key literal ('key'), not a substring of a longer
+        // key (picto_url, urls): a quote must bracket the key on both sides.
+        if !matches!(at.checked_sub(1).map(|i| bytes[i]), Some(b'\'' | b'"'))
+            || !matches!(bytes.get(at + key.len()), Some(b'\'' | b'"'))
+        {
+            continue;
+        }
         let rest = &code[at + key.len()..];
         // The key and its `=>` must be adjacent (an array key, not a stray word).
         let Some(arrow) = rest.find("=>") else { continue };
@@ -1093,6 +1121,28 @@ mod tests {
         ";
         let (_, edges) = run("widgetshop/core/modules/modWidgetshop.class.php", "modWidgetshop.class.php", code);
         assert!(edge_targets(&edges, "schedules").contains(&"BatchWidget"), "cron target class linked");
+    }
+
+    #[test]
+    fn menu_and_tab_urls_link_to_pages() {
+        let code = r"<?php
+            class modWidgetshop extends DolibarrModules
+            {
+                public function __construct($db)
+                {
+                    $this->rights_class = 'widgetshop';
+                    $this->menu[0] = array('url' => '/widgetshop/list.php?mainmenu=x', 'type' => 'left');
+                    $this->tabs[] = array('data' => 'product:+wtab:Widgets:widgetshop:1:/widgetshop/tab.php?id=__ID__');
+                    $this->extra = array('picto_url' => '/not/a/menu.svg');
+                }
+            }
+        ";
+        let (_, edges) = run("widgetshop/core/modules/modWidgetshop.class.php", "modWidgetshop.class.php", code);
+        let pages = edge_targets(&edges, "menu-page");
+        assert!(pages.contains(&"widgetshop/list.php"), "menu url -> page (query stripped)");
+        assert!(pages.contains(&"widgetshop/tab.php"), "tab data url -> page");
+        // 'picto_url' is a different key, and a .svg is not a page.
+        assert_eq!(pages.len(), 2, "only the two .php page links, got {pages:?}");
     }
 
     #[test]

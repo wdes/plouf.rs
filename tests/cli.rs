@@ -126,6 +126,10 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["callers", "hook:afterLogin", "--out", out_s]);
     assert!(o.contains("handles-hook\t"), "dolibarr core-fired hook handler: {o}");
 
+    // Dolibarr menu: a descriptor menu `url` links to the page it registers.
+    let (o, _, _) = run(&["callers", "dolibarr/widget_card.php", "--out", out_s]);
+    assert!(o.contains("menu-page\t"), "dolibarr menu-page: {o}");
+
     // Dolibarr .lang key definition surfaces via `uses` (defined + used).
     let (o, _, _) = run(&["uses", "WidgetShelfLabel", "--out", out_s]);
     assert!(o.contains("widgetshop.lang") && o.contains("widget_card.php"), "dolibarr lang key: {o}");

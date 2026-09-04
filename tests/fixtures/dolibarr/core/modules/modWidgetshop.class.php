@@ -11,6 +11,7 @@ class modWidgetshop extends DolibarrModules
         $this->rights_class = 'widgetshop';
         $this->family = 'products';
         $this->module_parts = array('hooks' => array('data' => array('widgetcard')));
+        $this->menu[0] = array('url' => '/dolibarr/widget_card.php?mainmenu=widgetshop', 'type' => 'left');
         $this->cronjobs = array(
             0 => array(
                 'label' => 'Revalidate widgets',

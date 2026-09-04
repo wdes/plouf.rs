@@ -219,7 +219,7 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             // against the doc-root (try the path, then with its first segment --
             // the module dir -- stripped, since a module is often indexed at its
             // own root).
-            "dol-requires" => Some(resolve_dol_include(name, &idx.files)),
+            "dol-requires" | "menu-page" => Some(resolve_dol_include(name, &idx.files)),
             // A PHP file registers a custom Twig function -> its `twigfn:` node.
             "defines-fn" => Some(format!("twigfn:{name}")),
             // A Twig template calls one -> the node, but only if it was actually

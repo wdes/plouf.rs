@@ -233,6 +233,36 @@ pub fn scan_raw_sql_tables(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: 
             }
         }
     }
+    // Dolibarr's prefix-concatenation forms `MAIN_DB_PREFIX."societe"` and
+    // `$db->prefix()."societe"` (the string after is the already-unprefixed
+    // table). Together these are how nearly all of Dolibarr's PHP SQL names a
+    // table -- otherwise invisible, since the token after FROM is a `"` or `.`.
+    for marker in ["MAIN_DB_PREFIX", "prefix()"] {
+        let mut from = 0;
+        while let Some(pos) = code[from..].find(marker) {
+            let at = from + pos;
+            from = at + marker.len();
+            let mut i = at + marker.len();
+            while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            if bytes.get(i) != Some(&b'.') {
+                continue;
+            }
+            i += 1;
+            while matches!(bytes.get(i), Some(b) if b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            if !matches!(bytes.get(i), Some(b'\'' | b'"')) {
+                continue;
+            }
+            let Some(table) = read_sql_table(&code[i + 1..]) else { continue };
+            edges.push(RawEdge::named(rel.to_string(), "uses-table", table.clone()));
+            if minted.insert(table.clone()) {
+                nodes.push(Node { id: format!("table:{table}"), name: table.clone(), kind: "table", path: rel.to_string(), start: 0, end: 0 });
+            }
+        }
+    }
 }
 
 const fn is_sql_ident(b: u8) -> bool {
@@ -800,6 +830,8 @@ mod tests {
                 LEFT JOIN llx_societe s ON s.rowid = f.fk_soc
                 SQL);
             $db->query("UPDATE llx_product SET tosell = 1 WHERE rowid = 3");
+            $db->query("SELECT rowid FROM ".MAIN_DB_PREFIX."facture_extrafields as e");
+            $db->query("DELETE FROM ".$db->prefix()."element_element WHERE x = 1");
         "#;
         let mut nodes: Vec<Node> = Vec::new();
         let mut edges: Vec<RawEdge> = Vec::new();
@@ -814,6 +846,9 @@ mod tests {
         assert!(tables.contains("facture"), "FROM llx_facture -> facture");
         assert!(tables.contains("societe"), "JOIN llx_societe -> societe");
         assert!(tables.contains("product"), "UPDATE llx_product -> product");
+        // The prefix-concatenation forms are the common PHP shape.
+        assert!(tables.contains("facture_extrafields"), "MAIN_DB_PREFIX.'x' form");
+        assert!(tables.contains("element_element"), "$db->prefix().'x' form");
         assert!(nodes.iter().any(|n| n.kind == "table" && n.id == "table:facture"));
     }
 
@@ -821,15 +856,15 @@ mod tests {
     fn scan_raw_sql_skips_dynamic_and_non_keyword_tables() {
         let code = r#"<?php
             $db->query("SELECT * FROM $table WHERE id = 1");
-            $db->query("SELECT * FROM ".MAIN_DB_PREFIX."societe");
+            $db->query("SELECT * FROM ".$pfx."societe");
             $db->query("SELECT * FROM (SELECT 1) AS sub");
             $rows = fetchFromCache();
         "#;
         let mut nodes: Vec<Node> = Vec::new();
         let mut edges: Vec<RawEdge> = Vec::new();
         super::scan_raw_sql_tables("f.php", code, &mut nodes, &mut edges);
-        // A $var, a concatenated prefix, a subquery, and the mixed-case
-        // `fetchFromCache` word are all skipped -- no bare table identifier.
+        // A $var table, a $var prefix, a subquery, and the mixed-case
+        // `fetchFromCache` word are all skipped -- no recognised table.
         assert!(edges.is_empty(), "expected no tables, got {edges:?}");
         assert!(nodes.is_empty());
     }
