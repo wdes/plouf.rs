@@ -9,10 +9,11 @@ use mago_allocator::LocalArena;
 use mago_database::file::File;
 use mago_span::HasSpan;
 use mago_syntax::cst::cst::{
-    ArrowFunction, Class, ClassLikeMemberSelector, Closure, Enum, Expression, Function,
+    ArrowFunction, Class, ClassConstantAccess, ClassLikeMemberSelector, Closure, Enum, Expression, Function,
     FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct,
-    Instantiation, Interface, Method, MethodCall, RequireConstruct, RequireOnceConstruct, Return,
-    StaticMethodCall, Trait, TraitUse, Use, UseItems, Variable,
+    FunctionPartialApplication, Instantiation, Interface, Method, MethodCall,
+    MethodPartialApplication, RequireConstruct, RequireOnceConstruct, Return, StaticMethodCall,
+    StaticMethodPartialApplication, Trait, TraitUse, Use, UseItems, Variable,
 };
 use mago_syntax::cst::Program;
 use mago_syntax::parser::parse_file;
@@ -591,6 +592,55 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         ctx.edges.push(RawEdge::call(src, m, true, recv));
     }
 
+    // First-class callable syntax (`foo(...)`, `$this->m(...)`, `Class::m(...)`)
+    // references the callable without invoking it -- emit the same `calls` edge as
+    // a real call so a method only ever passed as a callable is not read as dead.
+    fn walk_in_function_partial_application(&self, node: &'ast FunctionPartialApplication<'arena>, ctx: &mut Ctx) {
+        if let Some(n) = callee_name(node.function) {
+            let src = ctx.cur();
+            ctx.edges.push(RawEdge::call(src, n, false, None));
+        }
+    }
+
+    fn walk_in_method_partial_application(&self, node: &'ast MethodPartialApplication<'arena>, ctx: &mut Ctx) {
+        let Some(m) = selector_name(&node.method) else { return };
+        let recv = match var_name(node.object) {
+            Some(v) if v == "$this" => ctx.class_stack.last().cloned(),
+            Some(v) => ctx.lookup(&v),
+            None => None,
+        };
+        let src = ctx.cur();
+        ctx.edges.push(RawEdge::call(src, m, true, recv));
+    }
+
+    fn walk_in_static_method_partial_application(&self, node: &'ast StaticMethodPartialApplication<'arena>, ctx: &mut Ctx) {
+        let Some(m) = selector_name(&node.method) else { return };
+        let recv = match node.class {
+            Expression::Identifier(id) => Some(ident_name(id)),
+            Expression::Self_(_) | Expression::Static(_) => ctx.class_stack.last().cloned(),
+            Expression::Parent(_) => ctx.parent_stack.last().cloned().flatten(),
+            _ => None,
+        };
+        let src = ctx.cur();
+        ctx.edges.push(RawEdge::call(src, m, true, recv));
+    }
+
+    // `Class::CONST` / `Enum::Case` / `Class::class` -> a `uses-const` edge to the
+    // class, so a constant/enum-case registry (route names, status enums) that is
+    // only ever read through its members is not read as dead. `self::`/`static::`
+    // (a self-reference) and a dynamic class are skipped; `parent::` targets the base.
+    fn walk_in_class_constant_access(&self, node: &'ast ClassConstantAccess<'arena>, ctx: &mut Ctx) {
+        let class = match node.class {
+            Expression::Identifier(id) => Some(ident_name(id)),
+            Expression::Parent(_) => ctx.parent_stack.last().cloned().flatten(),
+            _ => None,
+        };
+        if let Some(class) = class {
+            let src = ctx.cur();
+            ctx.edges.push(RawEdge::named(src, "uses-const", class));
+        }
+    }
+
     // `new X(...)` -> an `instantiates` edge to class `X`, so a class only ever
     // constructed (DTOs, controllers, models) is not read as dead. `new $var()` /
     // `new (expr)()` is dynamic and skipped; `new self/static()` targets the class.
@@ -858,5 +908,52 @@ mod tests {
         assert!(has_named(&edges, "covers", "Invoice")); // CoversClass(X::class)
         assert!(has_named(&edges, "covers", "array_flatten")); // CoversFunction('fn')
         assert!(has_named(&edges, "covers", "Billing")); // @coversDefaultClass (de-qualified)
+    }
+
+    #[test]
+    fn class_constant_access_links_the_owning_class() {
+        // A route/enum registry read only through its members must not look dead.
+        let code = r"<?php
+            enum Status { case Open; }
+            class Route { const IMPORT = 'import'; }
+            class Svc {
+                public function run() {
+                    $a = Route::IMPORT;
+                    $b = Status::Open;
+                    $c = Route::class;
+                    return [$a, $b, $c];
+                }
+            }
+        ";
+        let (_, edges) = extract("f.php", code);
+        let used: Vec<&str> =
+            edges.iter().filter(|e| e.relation == "uses-const").filter_map(|e| e.name.as_deref()).collect();
+        assert!(used.contains(&"Route"), "Route::IMPORT / Route::class -> uses-const Route");
+        assert!(used.contains(&"Status"), "Status::Open -> uses-const Status");
+    }
+
+    #[test]
+    fn first_class_callables_emit_the_same_call_edge() {
+        // `foo(...)` / `$this->m(...)` / `Class::m(...)` reference a callable without
+        // invoking it -- a method only ever passed this way must not look dead.
+        let code = r"<?php
+            class Base { public function help() {} }
+            class Svc extends Base {
+                public function run() {
+                    $fn = foo(...);
+                    $m = $this->scale(...);
+                    $s = self::help(...);
+                    $st = Base::help(...);
+                    return [$fn, $m, $s, $st];
+                }
+                public function scale() {}
+            }
+            function foo() {}
+        ";
+        let (_, edges) = extract("f.php", code);
+        assert!(has_call(&edges, "foo", None), "foo(...) -> calls foo");
+        assert!(has_call(&edges, "scale", Some("Svc")), "$this->scale(...) -> calls Svc::scale");
+        assert!(has_call(&edges, "help", Some("Svc")), "self::help(...) targets the current class");
+        assert!(has_call(&edges, "help", Some("Base")), "Base::help(...) targets the named class");
     }
 }

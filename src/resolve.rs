@@ -241,7 +241,7 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge], psr4: Vec<(String, String)>) -
             "declares-module" => Some(format!("module:{name}")),
             // A `$fields` `integer:Class:...` FK, a descriptor `depends` module,
             // or a `cronjobs` target -> the related/dependency/cron class by name.
-            "relates-to" | "depends-on" | "schedules" | "instantiates" => {
+            "relates-to" | "depends-on" | "schedules" | "instantiates" | "uses-const" => {
                 Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
             }
             // An API class' `@requires` role gate -> the shared `role:<name>` node.
