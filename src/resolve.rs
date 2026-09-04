@@ -220,6 +220,8 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             // the module dir -- stripped, since a module is often indexed at its
             // own root).
             "dol-requires" | "menu-page" => Some(resolve_dol_include(name, &idx.files)),
+            // Dolibarr `llx_const` config keys -> their shared `config:<KEY>` node.
+            "reads-config" | "writes-config" => Some(format!("config:{name}")),
             // A PHP file registers a custom Twig function -> its `twigfn:` node.
             "defines-fn" => Some(format!("twigfn:{name}")),
             // A Twig template calls one -> the node, but only if it was actually

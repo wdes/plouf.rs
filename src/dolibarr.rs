@@ -81,6 +81,53 @@ pub fn scan(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mu
     scan_object_fields(rel, code, nodes, edges);
     scan_api_routes(rel, base, code, nodes, edges);
     scan_includes(rel, code, edges);
+    scan_config(rel, code, nodes, edges);
+}
+
+/// Dolibarr's `llx_const` config store (its `config()` analog). A
+/// `getDolGlobalString/Int/Bool/Float/Array('KEY')` read (or the legacy
+/// `$conf->global->KEY`) -> a `reads-config` edge to a shared `config:KEY` node;
+/// a `dolibarr_set_const($db, 'KEY', ...)` write -> a `writes-config` edge. So
+/// `callers config:KEY` answers "who reads/writes this setting".
+fn scan_config(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    let mut minted = HashSet::new();
+    for getter in
+        ["getDolGlobalString", "getDolGlobalInt", "getDolGlobalBool", "getDolGlobalFloat", "getDolGlobalArray"]
+    {
+        for_each_call(code, getter, |args| {
+            if let Some(key) = split_args(args).first().and_then(|a| string_literal(a)) {
+                edges.push(RawEdge::named(rel.to_string(), "reads-config", key.clone()));
+                mint(&mut minted, nodes, node(rel, "config", &key));
+            }
+        });
+    }
+    // `dolibarr_set_const($db, 'KEY', value, ...)` -- the key is the 2nd argument.
+    for_each_call(code, "dolibarr_set_const", |args| {
+        if let Some(key) = split_args(args).get(1).and_then(|a| string_literal(a)) {
+            edges.push(RawEdge::named(rel.to_string(), "writes-config", key.clone()));
+            mint(&mut minted, nodes, node(rel, "config", &key));
+        }
+    });
+    // Legacy property read `$conf->global->KEY`.
+    let bytes = code.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = code[from..].find("global->") {
+        let at = from + pos;
+        from = at + "global->".len();
+        if !(at >= 2 && &code[at - 2..at] == "->") {
+            continue;
+        }
+        let mut i = at + "global->".len();
+        let start = i;
+        while matches!(bytes.get(i), Some(b) if is_ident(*b)) {
+            i += 1;
+        }
+        if i > start {
+            let key = &code[start..i];
+            edges.push(RawEdge::named(rel.to_string(), "reads-config", key.to_string()));
+            mint(&mut minted, nodes, node(rel, "config", key));
+        }
+    }
 }
 
 /// `mod<Name> extends DolibarrModules`: mint a `module:<rights_class>` node (the
@@ -1143,6 +1190,28 @@ mod tests {
         assert!(pages.contains(&"widgetshop/tab.php"), "tab data url -> page");
         // 'picto_url' is a different key, and a .svg is not a page.
         assert_eq!(pages.len(), 2, "only the two .php page links, got {pages:?}");
+    }
+
+    #[test]
+    fn config_reads_and_writes_link_to_config_keys() {
+        let code = r"<?php
+            class Svc {
+                public function run($db)
+                {
+                    $addon = getDolGlobalString('PRODUCT_CODEPRODUCT_ADDON', 'mod_x');
+                    $n = getDolGlobalInt('MAIN_SIZE_LISTE_LIMIT');
+                    $legacy = $conf->global->SOCIETE_FISCAL_MONTH_START;
+                    dolibarr_set_const($db, 'WIDGETSHOP_ENABLED', 1, 'chaine', 0, '', 1);
+                }
+            }
+        ";
+        let (nodes, edges) = run("acme/svc.php", "svc.php", code);
+        let reads = edge_targets(&edges, "reads-config");
+        assert!(reads.contains(&"PRODUCT_CODEPRODUCT_ADDON"), "getDolGlobalString key");
+        assert!(reads.contains(&"MAIN_SIZE_LISTE_LIMIT"), "getDolGlobalInt key");
+        assert!(reads.contains(&"SOCIETE_FISCAL_MONTH_START"), "legacy $conf->global->KEY");
+        assert!(edge_targets(&edges, "writes-config").contains(&"WIDGETSHOP_ENABLED"), "dolibarr_set_const 2nd arg");
+        assert!(nodes.iter().any(|n| n.kind == "config" && n.id == "config:WIDGETSHOP_ENABLED"));
     }
 
     #[test]

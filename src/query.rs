@@ -352,6 +352,8 @@ fn is_reference(relation: &str) -> bool {
             | "schedules"
             | "menu-page"
             | "instantiates"
+            | "reads-config"
+            | "writes-config"
     ) || crate::laravel::relation_kind(relation).is_some()
 }
 
@@ -582,6 +584,7 @@ pub fn missing(out: &str) -> Result<(), io::Error> {
             !matches!(
                 n.kind.as_str(),
                 "file" | "component" | "route" | "module" | "permission" | "trigger" | "hook" | "role"
+                    | "config"
             )
         })
         .filter(|n| !referenced.contains(n.id.as_str()))

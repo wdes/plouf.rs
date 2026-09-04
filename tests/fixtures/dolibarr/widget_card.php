@@ -8,6 +8,7 @@ if (!$user->hasRight('widgetshop', 'read')) {
 }
 
 $title = $langs->trans('WidgetShelfLabel');
+$limit = getDolGlobalInt('WIDGETSHOP_LIST_LIMIT');
 
 $hookmanager->initHooks(array('widgetcard'));
 $parameters = array('id' => $id);

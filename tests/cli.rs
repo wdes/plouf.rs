@@ -130,6 +130,10 @@ fn indexes_and_answers_every_verb() {
     let (o, _, _) = run(&["callers", "dolibarr/widget_card.php", "--out", out_s]);
     assert!(o.contains("menu-page\t"), "dolibarr menu-page: {o}");
 
+    // Dolibarr config store: getDolGlobalInt('KEY') reads a config:<KEY> node.
+    let (o, _, _) = run(&["callers", "config:WIDGETSHOP_LIST_LIMIT", "--out", out_s]);
+    assert!(o.contains("reads-config\t"), "dolibarr config read: {o}");
+
     // Dolibarr .lang key definition surfaces via `uses` (defined + used).
     let (o, _, _) = run(&["uses", "WidgetShelfLabel", "--out", out_s]);
     assert!(o.contains("widgetshop.lang") && o.contains("widget_card.php"), "dolibarr lang key: {o}");
