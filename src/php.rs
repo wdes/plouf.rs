@@ -9,12 +9,13 @@ use mago_allocator::LocalArena;
 use mago_database::file::File;
 use mago_span::HasSpan;
 use mago_syntax::cst::cst::{
-    ArrowFunction, Class, ClassConstantAccess, ClassLikeMemberSelector, Closure, Enum, Expression, Function,
-    FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct,
+    Access, ArrowFunction, Class, ClassConstantAccess, ClassLikeMember, ClassLikeMemberSelector, Closure, Enum,
+    Expression, Function, FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct,
     FunctionPartialApplication, Instantiation, Interface, Method, MethodCall,
-    MethodPartialApplication, RequireConstruct, RequireOnceConstruct, Return, StaticMethodCall,
-    StaticMethodPartialApplication, Trait, TraitUse, Use, UseItems, Variable,
+    MethodPartialApplication, Property, PropertyItem, RequireConstruct, RequireOnceConstruct, Return,
+    StaticMethodCall, StaticMethodPartialApplication, Trait, TraitUse, Use, UseItems, Variable,
 };
+use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Program;
 use mago_syntax::parser::parse_file;
 use mago_syntax::walker::Walker;
@@ -135,6 +136,59 @@ fn var_name(expr: &Expression) -> Option<String> {
         Expression::Variable(Variable::Direct(dv)) => Some(bytes(dv.name)),
         _ => None,
     }
+}
+
+/// The property name of a `$this->prop` access (handles `?->` too), so a
+/// `$this->prop->method()` receiver can be resolved through the property's
+/// declared type. `None` for any other object expression.
+fn this_prop_name(expr: &Expression) -> Option<String> {
+    let (object, property) = match expr {
+        Expression::Access(Access::Property(p)) => (p.object, &p.property),
+        Expression::Access(Access::NullSafeProperty(p)) => (p.object, &p.property),
+        _ => return None,
+    };
+    (var_name(object).as_deref() == Some("$this")).then(|| selector_name(property)).flatten()
+}
+
+/// Collect the declared class types of a class-like's typed instance properties,
+/// keyed by bare property name (`prop` for `public Foo $prop;`), including
+/// constructor-promoted params (`__construct(private Foo $prop)`). Untyped or
+/// non-class-typed properties are skipped -- they carry no receiver we can wire.
+fn collect_prop_types(members: &Sequence<ClassLikeMember>) -> HashMap<String, String> {
+    let mut types = HashMap::new();
+    for member in members {
+        match member {
+            ClassLikeMember::Property(prop) => {
+                let (hint, items): (_, Vec<&PropertyItem>) = match prop {
+                    Property::Plain(p) => (p.hint.as_ref(), p.items.iter().collect()),
+                    Property::Hooked(p) => (p.hint.as_ref(), vec![&p.item]),
+                };
+                if let Some(ty) = hint.and_then(hint_class) {
+                    for item in items {
+                        let var = match item {
+                            PropertyItem::Abstract(a) => a.variable.name,
+                            PropertyItem::Concrete(c) => c.variable.name,
+                        };
+                        types.insert(bytes(var).trim_start_matches('$').to_string(), ty.clone());
+                    }
+                }
+            }
+            // Constructor property promotion: a param with a visibility/readonly
+            // modifier declares an instance property of the same name.
+            ClassLikeMember::Method(m) if bytes(m.name.value) == "__construct" => {
+                for p in m.parameter_list.parameters.iter() {
+                    if p.modifiers.is_empty() {
+                        continue;
+                    }
+                    if let Some(ty) = p.hint.as_ref().and_then(hint_class) {
+                        types.insert(bytes(p.variable.name).trim_start_matches('$').to_string(), ty);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    types
 }
 
 /// Emit a `requires` file-dependency edge for one `require`/`include` construct,
@@ -292,6 +346,9 @@ struct Ctx {
     class_ids: Vec<String>,
     /// The current class's base-class name (for `parent::`), one per class scope.
     parent_stack: Vec<Option<String>>,
+    /// Each class scope's typed instance properties (`prop` -> class), so a
+    /// `$this->prop->method()` receiver resolves to the property's type.
+    prop_types: Vec<HashMap<String, String>>,
     minted: HashSet<String>,
     bindings: Vec<HashMap<String, String>>,
     pending_closure_name: Option<String>,
@@ -313,6 +370,7 @@ impl Ctx {
             class_stack: Vec::new(),
             class_ids: Vec::new(),
             parent_stack: Vec::new(),
+            prop_types: Vec::new(),
             minted,
             bindings: Vec::new(),
             pending_closure_name: None,
@@ -399,18 +457,25 @@ impl Ctx {
         self.bindings.pop();
     }
 
-    fn enter_class_like(&mut self, name: String, id: String, parent: Option<String>) {
+    fn enter_class_like(&mut self, name: String, id: String, parent: Option<String>, props: HashMap<String, String>) {
         self.class_stack.push(name);
         self.class_ids.push(id.clone());
         self.parent_stack.push(parent);
+        self.prop_types.push(props);
         self.scope.push(id);
     }
 
     fn leave_class_like(&mut self) {
         self.scope.pop();
+        self.prop_types.pop();
         self.parent_stack.pop();
         self.class_ids.pop();
         self.class_stack.pop();
+    }
+
+    /// The declared class type of the current class's `$this->prop`, if typed.
+    fn prop_type(&self, prop: &str) -> Option<String> {
+        self.prop_types.last().and_then(|m| m.get(prop).cloned())
     }
 
     fn closure_id(&mut self, start: u32, end: u32) -> (String, String) {
@@ -450,7 +515,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
             ctx.link_table(&id, &table, "table");
         }
         // The first extended class is the `parent::` target for this class scope.
-        ctx.enter_class_like(name, id, extends_names.first().cloned());
+        ctx.enter_class_like(name, id, extends_names.first().cloned(), collect_prop_types(&node.members));
     }
     fn walk_out_class(&self, _n: &'ast Class<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -462,7 +527,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         if let Some(ext) = &node.extends {
             ctx.heritage(&id, ext.types.iter().map(ident_name).collect(), "extends");
         }
-        ctx.enter_class_like(name, id, None);
+        ctx.enter_class_like(name, id, None, HashMap::new());
     }
     fn walk_out_interface(&self, _n: &'ast Interface<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -471,7 +536,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
     fn walk_in_trait(&self, node: &'ast Trait<'arena>, ctx: &mut Ctx) {
         let name = bytes(node.name.value);
         let id = ctx.push_node(format!("{}#{}", ctx.rel, name), name.clone(), "trait", node.start_offset(), node.end_offset());
-        ctx.enter_class_like(name, id, None);
+        ctx.enter_class_like(name, id, None, collect_prop_types(&node.members));
     }
     fn walk_out_trait(&self, _n: &'ast Trait<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -483,7 +548,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         if let Some(imp) = &node.implements {
             ctx.heritage(&id, imp.types.iter().map(ident_name).collect(), "implements");
         }
-        ctx.enter_class_like(name, id, None);
+        ctx.enter_class_like(name, id, None, collect_prop_types(&node.members));
     }
     fn walk_out_enum(&self, _n: &'ast Enum<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -571,7 +636,8 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         let recv = match var_name(node.object) {
             Some(v) if v == "$this" => ctx.class_stack.last().cloned(),
             Some(v) => ctx.lookup(&v),
-            None => None,
+            // `$this->prop->method()` -> the property's declared class type.
+            None => this_prop_name(node.object).and_then(|p| ctx.prop_type(&p)),
         };
         let src = ctx.cur();
         ctx.edges.push(RawEdge::call(src, m, true, recv));
@@ -607,7 +673,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         let recv = match var_name(node.object) {
             Some(v) if v == "$this" => ctx.class_stack.last().cloned(),
             Some(v) => ctx.lookup(&v),
-            None => None,
+            None => this_prop_name(node.object).and_then(|p| ctx.prop_type(&p)),
         };
         let src = ctx.cur();
         ctx.edges.push(RawEdge::call(src, m, true, recv));
@@ -930,6 +996,35 @@ mod tests {
             edges.iter().filter(|e| e.relation == "uses-const").filter_map(|e| e.name.as_deref()).collect();
         assert!(used.contains(&"Route"), "Route::IMPORT / Route::class -> uses-const Route");
         assert!(used.contains(&"Status"), "Status::Open -> uses-const Status");
+    }
+
+    #[test]
+    fn typed_property_receiver_resolves_the_method_owner() {
+        // `$this->prop->method()` resolves through the property's declared type --
+        // from a plain declaration, a promoted constructor param, or a `public`
+        // property. An untyped property carries no receiver.
+        let code = r"<?php
+            class Db { public function query($s) {} }
+            class Mailer { public function send() {} }
+            class Logger { public function info($m) {} }
+            class Service {
+                private Db $db;
+                public Mailer $mail;
+                private $untyped;
+                public function __construct(private Logger $log) {}
+                public function run() {
+                    $this->db->query('x');
+                    $this->mail->send();
+                    $this->log->info('y');
+                    $this->untyped->whatever();
+                }
+            }
+        ";
+        let (_, edges) = extract("a.php", code);
+        assert!(has_call(&edges, "query", Some("Db")), "declared `private Db $db`");
+        assert!(has_call(&edges, "send", Some("Mailer")), "`public Mailer $mail`");
+        assert!(has_call(&edges, "info", Some("Logger")), "promoted `private Logger $log`");
+        assert!(has_call(&edges, "whatever", None), "untyped property -> no receiver");
     }
 
     #[test]
