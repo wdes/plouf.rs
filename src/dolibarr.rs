@@ -80,8 +80,30 @@ pub fn scan(rel: &str, base: &str, code: &str, nodes: &mut Vec<Node>, edges: &mu
     scan_common_object(rel, code, nodes, edges);
     scan_object_fields(rel, code, nodes, edges);
     scan_api_routes(rel, base, code, nodes, edges);
+    scan_mini_routes(rel, code, nodes, edges);
     scan_includes(rel, code, edges);
     scan_config(rel, code, nodes, edges);
+}
+
+/// A home-grown Express-style REST router some modules ship instead of Restler:
+/// `router('GET', 'pattern', function () { ... })`. Each call mints a
+/// `route:<pattern>` node + a `serves` edge to the containing file (the handler
+/// is an anonymous closure with no named node). Gated on the first argument
+/// being an HTTP-verb string literal, so an unrelated `router(...)` is ignored.
+fn scan_mini_routes(rel: &str, code: &str, nodes: &mut Vec<Node>, edges: &mut Vec<RawEdge>) {
+    let mut minted = HashSet::new();
+    for_each_call(code, "router", |args| {
+        let parts = split_args(args);
+        if !parts.first().and_then(|a| string_literal(a)).is_some_and(|m| is_http_verb(&m.to_uppercase())) {
+            return;
+        }
+        let Some(pattern) = parts.get(1).and_then(|a| string_literal(a)) else {
+            return;
+        };
+        let route = normalize_route(&pattern);
+        // The closure handler has no named symbol, so the route serves the file.
+        mint_route(rel, &route, rel, &mut minted, nodes, edges);
+    });
 }
 
 /// Dolibarr's `llx_const` config store (its `config()` analog). A
@@ -1212,6 +1234,22 @@ mod tests {
         assert!(reads.contains(&"SOCIETE_FISCAL_MONTH_START"), "legacy $conf->global->KEY");
         assert!(edge_targets(&edges, "writes-config").contains(&"WIDGETSHOP_ENABLED"), "dolibarr_set_const 2nd arg");
         assert!(nodes.iter().any(|n| n.kind == "config" && n.id == "config:WIDGETSHOP_ENABLED"));
+    }
+
+    #[test]
+    fn mini_router_mints_route_nodes_serving_the_file() {
+        let code = r"<?php
+            router('GET', 'widgets/(?<id>[0-9]+)', function ($params) { return 1; });
+            router('POST', 'importWidget', function () { return 2; });
+            router($dynamicMethod, 'skipped', function () {});
+        ";
+        let (nodes, edges) = run("acme/api.php", "api.php", code);
+        let routes: std::collections::HashSet<&str> =
+            nodes.iter().filter(|n| n.kind == "route").map(|n| n.id.as_str()).collect();
+        assert!(routes.contains("route:/widgets/(?<id>[0-9]+)"), "GET pattern route");
+        assert!(routes.contains("route:/importWidget"), "POST route");
+        assert!(!routes.iter().any(|r| r.contains("skipped")), "dynamic-method router() is skipped");
+        assert!(edge_targets(&edges, "serves").iter().all(|t| *t == "acme/api.php"), "route serves the file");
     }
 
     #[test]
