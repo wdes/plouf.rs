@@ -10,9 +10,9 @@ use mago_database::file::File;
 use mago_span::HasSpan;
 use mago_syntax::cst::cst::{
     ArrowFunction, Class, ClassLikeMemberSelector, Closure, Enum, Expression, Function,
-    FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct, Interface,
-    Method, MethodCall, RequireConstruct, RequireOnceConstruct, Return, StaticMethodCall, Trait,
-    TraitUse, Use, UseItems, Variable,
+    FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct,
+    Instantiation, Interface, Method, MethodCall, RequireConstruct, RequireOnceConstruct, Return,
+    StaticMethodCall, Trait, TraitUse, Use, UseItems, Variable,
 };
 use mago_syntax::cst::Program;
 use mago_syntax::parser::parse_file;
@@ -289,6 +289,8 @@ struct Ctx {
     scope: Vec<String>,
     class_stack: Vec<String>,
     class_ids: Vec<String>,
+    /// The current class's base-class name (for `parent::`), one per class scope.
+    parent_stack: Vec<Option<String>>,
     minted: HashSet<String>,
     bindings: Vec<HashMap<String, String>>,
     pending_closure_name: Option<String>,
@@ -309,6 +311,7 @@ impl Ctx {
             scope: Vec::new(),
             class_stack: Vec::new(),
             class_ids: Vec::new(),
+            parent_stack: Vec::new(),
             minted,
             bindings: Vec::new(),
             pending_closure_name: None,
@@ -395,14 +398,16 @@ impl Ctx {
         self.bindings.pop();
     }
 
-    fn enter_class_like(&mut self, name: String, id: String) {
+    fn enter_class_like(&mut self, name: String, id: String, parent: Option<String>) {
         self.class_stack.push(name);
         self.class_ids.push(id.clone());
+        self.parent_stack.push(parent);
         self.scope.push(id);
     }
 
     fn leave_class_like(&mut self) {
         self.scope.pop();
+        self.parent_stack.pop();
         self.class_ids.pop();
         self.class_stack.pop();
     }
@@ -443,7 +448,8 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         {
             ctx.link_table(&id, &table, "table");
         }
-        ctx.enter_class_like(name, id);
+        // The first extended class is the `parent::` target for this class scope.
+        ctx.enter_class_like(name, id, extends_names.first().cloned());
     }
     fn walk_out_class(&self, _n: &'ast Class<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -455,7 +461,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         if let Some(ext) = &node.extends {
             ctx.heritage(&id, ext.types.iter().map(ident_name).collect(), "extends");
         }
-        ctx.enter_class_like(name, id);
+        ctx.enter_class_like(name, id, None);
     }
     fn walk_out_interface(&self, _n: &'ast Interface<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -464,7 +470,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
     fn walk_in_trait(&self, node: &'ast Trait<'arena>, ctx: &mut Ctx) {
         let name = bytes(node.name.value);
         let id = ctx.push_node(format!("{}#{}", ctx.rel, name), name.clone(), "trait", node.start_offset(), node.end_offset());
-        ctx.enter_class_like(name, id);
+        ctx.enter_class_like(name, id, None);
     }
     fn walk_out_trait(&self, _n: &'ast Trait<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -476,7 +482,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         if let Some(imp) = &node.implements {
             ctx.heritage(&id, imp.types.iter().map(ident_name).collect(), "implements");
         }
-        ctx.enter_class_like(name, id);
+        ctx.enter_class_like(name, id, None);
     }
     fn walk_out_enum(&self, _n: &'ast Enum<'arena>, ctx: &mut Ctx) {
         ctx.leave_class_like();
@@ -574,11 +580,30 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         let Some(m) = selector_name(&node.method) else { return };
         let recv = match node.class {
             Expression::Identifier(id) => Some(ident_name(id)),
-            Expression::Self_(_) | Expression::Static(_) | Expression::Parent(_) => ctx.class_stack.last().cloned(),
+            // `self::`/`static::` target the current class; `parent::` targets the
+            // base class -- resolving it against the current class would find the
+            // overriding method itself (a self-loop), so use the parent's name.
+            Expression::Self_(_) | Expression::Static(_) => ctx.class_stack.last().cloned(),
+            Expression::Parent(_) => ctx.parent_stack.last().cloned().flatten(),
             _ => None,
         };
         let src = ctx.cur();
         ctx.edges.push(RawEdge::call(src, m, true, recv));
+    }
+
+    // `new X(...)` -> an `instantiates` edge to class `X`, so a class only ever
+    // constructed (DTOs, controllers, models) is not read as dead. `new $var()` /
+    // `new (expr)()` is dynamic and skipped; `new self/static()` targets the class.
+    fn walk_in_instantiation(&self, node: &'ast Instantiation<'arena>, ctx: &mut Ctx) {
+        let class = match node.class {
+            Expression::Identifier(id) => Some(ident_name(id)),
+            Expression::Self_(_) | Expression::Static(_) => ctx.class_stack.last().cloned(),
+            _ => None,
+        };
+        if let Some(class) = class {
+            let src = ctx.cur();
+            ctx.edges.push(RawEdge::named(src, "instantiates", class));
+        }
     }
 
     // `require` / `include` (and their `_once` forms) as file-dependency edges.
@@ -787,12 +812,43 @@ mod tests {
 
     #[test]
     fn covers_closures_statics_and_duplicate_names() {
-        let code = "<?php\nfunction a() {}\nfunction a() {}\nclass P {\n  public function m() { return parent::x(); }\n  public function n() { $f = function () { return 1; }; $g = fn () => 2; return static::y(); }\n}";
+        let code = r"<?php
+            function a() {}
+            function a() {}
+            class Base { public function x() {} }
+            class P extends Base {
+                public function m() { return parent::x(); }
+                public function n() {
+                    $f = function () { return 1; };
+                    $g = fn () => 2;
+                    return static::y();
+                }
+            }
+        ";
         let (nodes, edges) = extract("d.php", code);
         assert_eq!(nodes.iter().filter(|n| n.name == "a" && n.kind == "function").count(), 2); // id collision -> ~2
-        assert!(has_call(&edges, "x", Some("P"))); // parent:: resolves to the class
-        assert!(has_call(&edges, "y", Some("P"))); // static:: resolves to the class
+        assert!(has_call(&edges, "x", Some("Base")), "parent:: targets the base class, not self");
+        assert!(has_call(&edges, "y", Some("P")), "static:: targets the current class");
         assert!(nodes.iter().any(|n| n.name == "f")); // closure named from its `$f =` assignment
+    }
+
+    #[test]
+    fn new_expression_links_the_instantiated_class() {
+        let code = r"<?php
+            class WidgetDto {}
+            class Factory {
+                public function build($cls) {
+                    $a = new WidgetDto();
+                    $b = new $cls();
+                    return $a;
+                }
+            }
+        ";
+        let (_, edges) = extract("f.php", code);
+        let inst: Vec<&str> =
+            edges.iter().filter(|e| e.relation == "instantiates").filter_map(|e| e.name.as_deref()).collect();
+        assert!(inst.contains(&"WidgetDto"), "new WidgetDto() -> instantiates the class");
+        assert!(!inst.iter().any(|n| n.contains("cls")), "new $cls() is dynamic -> skipped");
     }
 
     #[test]

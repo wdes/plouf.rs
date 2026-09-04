@@ -210,7 +210,7 @@ pub fn resolve(nodes: &[Node], edges: &[RawEdge]) -> Vec<ResolvedEdge> {
             "declares-module" => Some(format!("module:{name}")),
             // A `$fields` `integer:Class:...` FK, a descriptor `depends` module,
             // or a `cronjobs` target -> the related/dependency/cron class by name.
-            "relates-to" | "depends-on" | "schedules" => {
+            "relates-to" | "depends-on" | "schedules" | "instantiates" => {
                 Some(idx.resolve_named(&e.source, name).map_or_else(|| name.to_string(), str::to_string))
             }
             // An API class' `@requires` role gate -> the shared `role:<name>` node.
