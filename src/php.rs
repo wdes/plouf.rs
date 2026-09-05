@@ -203,6 +203,58 @@ fn collect_prop_types(members: &Sequence<ClassLikeMember>) -> HashMap<String, St
     types
 }
 
+/// The `/* ... */` block comment immediately preceding byte offset `start`
+/// (skipping intervening whitespace), or `None` if the code there isn't preceded
+/// by one. Used to read a function/method's phpdoc block for `@param`/`@var`
+/// types that older Dolibarr code documents but does not declare natively.
+fn doc_before(src: &str, start: usize) -> Option<&str> {
+    let head = src.get(..start.min(src.len()))?;
+    let trimmed = head.trim_end();
+    if !trimmed.ends_with("*/") {
+        return None;
+    }
+    let open = trimmed.rfind("/*")?;
+    Some(&trimmed[open..])
+}
+
+/// The class named by a phpdoc type token, or `None` for a primitive / union /
+/// generic / array (`int`, `?Foo`, `Foo|Bar`, `Foo[]`, `array<...>`). Classes are
+/// `PascalCase`; scalars and pseudo-types are lowercase, so the leading case
+/// discriminates them. The name is de-qualified (`\App\User` -> `User`).
+fn phpdoc_class(ty: &str) -> Option<String> {
+    let ty = ty.trim_start_matches('?').trim_start_matches('\\');
+    if ty.is_empty() || ty.contains(['|', '&', '<', '[', ']', '(', '{']) {
+        return None;
+    }
+    let bare = ty.rsplit('\\').next().unwrap_or(ty);
+    if !bare.chars().next()?.is_ascii_uppercase() {
+        return None;
+    }
+    Some(bare.to_string())
+}
+
+/// Parse a phpdoc block for `@param <Class> $x` / `@var <Class> $x` lines and
+/// return each `($x, Class)` pair (variable keyed with its leading `$`, matching
+/// the walker's binding map). Lines whose type is not a class are skipped.
+fn phpdoc_bindings(doc: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in doc.lines() {
+        let line = line.trim_start().trim_start_matches('*').trim_start();
+        let rest = line.strip_prefix("@param ").or_else(|| line.strip_prefix("@var "));
+        let Some(rest) = rest else { continue };
+        let mut toks = rest.split_whitespace();
+        let Some(class) = toks.next().and_then(phpdoc_class) else { continue };
+        // The variable may follow the type directly or after a `&`/`...` marker.
+        if let Some(var) = toks.find(|t| t.starts_with('$')) {
+            let name: String = var.chars().take_while(|&c| c == '$' || c.is_alphanumeric() || c == '_').collect();
+            if name.len() > 1 {
+                out.push((name, class));
+            }
+        }
+    }
+    out
+}
+
 /// Emit a `requires` file-dependency edge for one `require`/`include` construct,
 /// given its path expression `value`. The path is resolved relative to the
 /// including file (like a JS relative import): `__DIR__`/`dirname(__FILE__)`
@@ -445,6 +497,29 @@ impl Ctx {
         }
     }
 
+    /// Bind `var` only if this scope hasn't already typed it -- a native type hint
+    /// (bound first) is more reliable than a phpdoc annotation and must win.
+    fn bind_if_absent(&mut self, var: String, ty: String) {
+        if let Some(m) = self.bindings.last_mut() {
+            m.entry(var).or_insert(ty);
+        }
+    }
+
+    /// Bind `@param <Class> $x` / `@var <Class> $x` types from the phpdoc block
+    /// preceding a function/method at byte offset `start`. Many older Dolibarr
+    /// signatures document a receiver's class this way without a native hint, so
+    /// this recovers the type for later `$x->method()` resolution.
+    fn bind_doc_types(&mut self, start: u32) {
+        // Collect first so the immutable borrow of `source` ends before we bind.
+        let bindings = match doc_before(&self.source, start as usize) {
+            Some(doc) => phpdoc_bindings(doc),
+            None => return,
+        };
+        for (var, class) in bindings {
+            self.bind_if_absent(var, class);
+        }
+    }
+
     /// Innermost-first, so a closure sees its enclosing function's typed vars.
     fn lookup(&self, var: &str) -> Option<String> {
         self.bindings.iter().rev().find_map(|m| m.get(var).cloned())
@@ -570,6 +645,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         let name = bytes(node.name.value);
         let id = ctx.push_node(format!("{}#{}", ctx.rel, name), name, "function", node.start_offset(), node.end_offset());
         ctx.enter_fn_like(id, &node.parameter_list);
+        ctx.bind_doc_types(node.start_offset());
     }
     fn walk_out_function(&self, _n: &'ast Function<'arena>, ctx: &mut Ctx) {
         ctx.leave_fn_like();
@@ -580,6 +656,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         let cls = ctx.class_stack.last().cloned().unwrap_or_default();
         let id = ctx.push_node(format!("{}#{cls}.{name}", ctx.rel), name, "method", node.start_offset(), node.end_offset());
         ctx.enter_fn_like(id, &node.parameter_list);
+        ctx.bind_doc_types(node.start_offset());
     }
     fn walk_out_method(&self, _n: &'ast Method<'arena>, ctx: &mut Ctx) {
         ctx.leave_fn_like();
@@ -1041,6 +1118,49 @@ mod tests {
         // `new self()` inside a method types against the current class.
         let (_, e2) = extract("b.php", "<?php\nclass P {\n  public static function make() { $x = new self(); return $x->go(); }\n  public function go() {}\n}");
         assert!(has_call(&e2, "go", Some("P")), "new self() -> current class");
+    }
+
+    #[test]
+    fn phpdoc_param_types_the_receiver_when_the_native_hint_is_absent() {
+        // Older Dolibarr signatures document a receiver's class in phpdoc without a
+        // native type hint; that `@param Class $x` must still type `$x->method()`.
+        let code = r"<?php
+            class Facture {
+                public function fetch($id) {}
+                public function delete() {}
+            }
+            /**
+             * @param  Facture  $object  the invoice
+             * @param  int      $mode
+             */
+            function handle($object, $mode) {
+                $object->fetch(1);
+                $object->delete();
+            }
+            class Svc {
+                /** @param Facture $f Bill */
+                public function run($f) { $f->delete(); }
+            }
+        ";
+        let (_, edges) = extract("a.php", code);
+        assert!(has_call(&edges, "fetch", Some("Facture")), "@param on a function");
+        assert!(has_call(&edges, "delete", Some("Facture")), "@param on a function (2nd call)");
+        assert!(has_call(&edges, "delete", Some("Facture")), "@param on a method");
+        // A native hint must win over a contradictory phpdoc line.
+        let (_, e2) = extract("b.php", "<?php\nclass A { public function m() {} }\nclass B { public function m() {} }\n/** @param B $x */\nfunction f(A $x) { $x->m(); }");
+        assert!(has_call(&e2, "m", Some("A")), "native hint beats phpdoc");
+        assert!(!has_call(&e2, "m", Some("B")), "phpdoc does not override a native hint");
+    }
+
+    #[test]
+    fn phpdoc_bindings_parses_only_class_typed_tags() {
+        use super::phpdoc_bindings;
+        let doc = "/**\n * @param Facture $a\n * @param int $b\n * @param Foo|Bar $c\n * @var  \\App\\User  $d\n * @return void\n */";
+        let got = phpdoc_bindings(doc);
+        assert!(got.contains(&("$a".to_string(), "Facture".to_string())), "class @param");
+        assert!(got.contains(&("$d".to_string(), "User".to_string())), "de-qualified @var");
+        assert!(!got.iter().any(|(v, _)| v == "$b"), "int is a scalar, not a class");
+        assert!(!got.iter().any(|(v, _)| v == "$c"), "a union is not a single class");
     }
 
     #[test]
