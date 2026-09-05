@@ -535,9 +535,10 @@ fn is_bootstrap(target: &str) -> bool {
 }
 
 /// Whether a heritage target names a Dolibarr framework base whose subclasses are
-/// registry/config/cron-dispatched entry points (numbering `Modele*`, PDF doc
-/// models, `ModeleBoxes` widgets, module descriptors, triggers, hook handlers,
-/// API classes) -- live in production but never called from indexed code.
+/// registry/config/cron-dispatched entry points (numbering `Modele*`/`ModelNumRef*`,
+/// PDF/ODT doc + label models, `ModeleBoxes` widgets, module descriptors, triggers,
+/// hook handlers, API classes, emailing target selectors, extrafield field types)
+/// -- live in production but never called from indexed code.
 fn is_framework_base(name: &str) -> bool {
     // The target may be an out-of-tree bare name (`ModeleNumRef`) or a resolved
     // in-repo node id (`path#ModeleNumRefFoo`) when a module defines its own
@@ -545,7 +546,20 @@ fn is_framework_base(name: &str) -> bool {
     let base = name.rsplit('#').next().unwrap_or(name);
     let base = base.rsplit('\\').next().unwrap_or(base);
     base.starts_with("Modele")
-        || matches!(base, "DolibarrModules" | "DolibarrTriggers" | "CommonHookActions" | "DolibarrApi")
+        // Dolibarr's misspelled numbering-model variant (`ModelNumRefXxx`).
+        || base.starts_with("ModelNumRef")
+        // Extrafield / dictionary field-type plugins (`core/class/fields/*`),
+        // dispatched by field type: `CommonField`, `CommonSelectField`, ...
+        || (base.starts_with("Common") && base.ends_with("Field"))
+        || matches!(
+            base,
+            "DolibarrModules" | "DolibarrTriggers" | "CommonHookActions" | "DolibarrApi"
+            // Registry/config-dispatched generators: PDF/ODT document models,
+            // label/sticker models, and reference-numbering models.
+            | "CommonDocGenerator" | "CommonStickerGenerator" | "CommonNumRefGenerator"
+            // Emailing target-selector plugins (`core/modules/mailings/*`).
+            | "MailingTargets"
+        )
 }
 
 /// Report graph gaps: symbols nothing references, edges that never resolved to a
@@ -688,8 +702,15 @@ mod tests {
         // A module-local base resolves to a `path#Name` id -- still recognised.
         assert!(is_framework_base("mod/core/x.php#ModeleNumRefFoo"), "in-repo qualified id");
         assert!(is_framework_base("App\\PDF\\ModelePDFBar"), "namespaced");
+        // Generator / numbering / mailing / extrafield dispatch bases.
+        assert!(is_framework_base("CommonDocGenerator"), "PDF/ODT doc models");
+        assert!(is_framework_base("CommonNumRefGenerator"), "numbering models");
+        assert!(is_framework_base("core/x.php#ModelNumRefContracts"), "misspelled numbering variant");
+        assert!(is_framework_base("MailingTargets"), "emailing selectors");
+        assert!(is_framework_base("CommonSelectField"), "extrafield field types");
         assert!(!is_framework_base("SomeController"));
         assert!(!is_framework_base("a/b.php#PlainClass"));
+        assert!(!is_framework_base("CommonObject"), "the universal object base is NOT an entry point");
     }
 
     fn edge(source: &str, target: &str, relation: &str) -> EdgeRec {

@@ -35,6 +35,22 @@ from collections import Counter, defaultdict
 CONTAINER = {"class", "trait", "enum"}
 SYMBOL = {"function", "method", "class", "interface", "trait", "enum"}
 
+# Kept in lock-step with src/query.rs `is_framework_base`: a class extending one
+# of these Dolibarr bases is registry/config/cron-dispatched -- an entry point
+# that lives in production but is never called from indexed code, so it (and all
+# its methods) counts as explained, not residue.
+FRAMEWORK_BASES = {
+    "DolibarrModules", "DolibarrTriggers", "CommonHookActions", "DolibarrApi",
+    "CommonDocGenerator", "CommonStickerGenerator", "CommonNumRefGenerator", "MailingTargets",
+}
+
+
+def is_framework_base(name):
+    base = name.rsplit("#", 1)[-1].rsplit("\\", 1)[-1]
+    return (base.startswith("Modele") or base.startswith("ModelNumRef")
+            or (base.startswith("Common") and base.endswith("Field"))
+            or base in FRAMEWORK_BASES)
+
 
 def load_graph(out_dir):
     path = os.path.join(out_dir, ".graph", "wiring.json")
@@ -57,11 +73,21 @@ def analyse(graph):
     nodes = {n["id"]: n for n in graph["nodes"]}
     referenced = set()                      # target of any non-contains edge
     children = defaultdict(list)            # container id -> child ids
+    framework_entry = set()                 # classes that extend a framework base
     for e in graph["edges"]:
         if e["relation"] == "contains":
             children[e["source"]].append(e["target"])
         else:
             referenced.add(e["target"])
+        if e["relation"] in ("extends", "implements") and is_framework_base(e["target"]):
+            framework_entry.add(e["source"])
+
+    def is_entry(i):
+        return i in framework_entry or i.rsplit(".", 1)[0] in framework_entry
+
+    def explained(i):
+        # An incoming link, or a framework entry point (dispatched, not called).
+        return i in referenced or is_entry(i)
 
     def methods_of(cid):
         return [c for c in children.get(cid, []) if nodes.get(c, {}).get("kind") == "method"]
@@ -75,25 +101,27 @@ def analyse(graph):
 
     for i, n in nodes.items():
         kind = n["kind"]
-        if kind not in SYMBOL:
+        # Vendored Composer code is out-of-repo -- not the project's residue.
+        if kind not in SYMBOL or "vendor/" in i:
             continue
         if kind in CONTAINER:
             members = methods_of(i)
-            if i in referenced and all(m in referenced for m in members):
+            if explained(i) and all(explained(m) for m in members):
                 drop(n)                      # whole class is accounted for
                 deleted.update(members)      # its methods are subsumed
             else:
                 for m in members:
-                    if m in referenced:
+                    if explained(m):
                         drop(nodes[m])
         elif kind == "interface":
-            if i in referenced:              # method decls are contracts, not calls
+            if explained(i):                 # method decls are contracts, not calls
                 drop(n)
                 deleted.update(methods_of(i))
-        elif kind == "function" and i in referenced:
+        elif kind == "function" and explained(i):
             drop(n)
 
-    kept = [n for i, n in nodes.items() if n["kind"] in SYMBOL and i not in deleted]
+    kept = [n for i, n in nodes.items()
+            if n["kind"] in SYMBOL and i not in deleted and "vendor/" not in i]
     return nodes, del_spans, deleted, kept
 
 
