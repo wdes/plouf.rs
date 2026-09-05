@@ -9,7 +9,8 @@ use mago_allocator::LocalArena;
 use mago_database::file::File;
 use mago_span::HasSpan;
 use mago_syntax::cst::cst::{
-    Access, ArrowFunction, Class, ClassConstantAccess, ClassLikeMember, ClassLikeMemberSelector, Closure, Enum,
+    Access, ArrowFunction, Assignment, AssignmentOperator, Class, ClassConstantAccess, ClassLikeMember,
+    ClassLikeMemberSelector, Closure, Enum,
     Expression, Function, FunctionLikeParameterList, Hint, Identifier, IncludeConstruct, IncludeOnceConstruct,
     FunctionPartialApplication, Instantiation, Interface, Method, MethodCall,
     MethodPartialApplication, Property, PropertyItem, RequireConstruct, RequireOnceConstruct, Return,
@@ -134,6 +135,17 @@ fn callee_name(expr: &Expression) -> Option<String> {
 fn var_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::Variable(Variable::Direct(dv)) => Some(bytes(dv.name)),
+        _ => None,
+    }
+}
+
+/// The class named by a `new X()` target expression: a plain identifier, or the
+/// current class for `new self()`/`new static()`. `None` for `new $var()` /
+/// `new (expr)()` (dynamic) -- there is no static class to record.
+fn new_class(class: &Expression, ctx: &Ctx) -> Option<String> {
+    match class {
+        Expression::Identifier(id) => Some(ident_name(id)),
+        Expression::Self_(_) | Expression::Static(_) => ctx.class_stack.last().cloned(),
         _ => None,
     }
 }
@@ -573,10 +585,21 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
         ctx.leave_fn_like();
     }
 
-    fn walk_in_assignment(&self, node: &'ast mago_syntax::cst::cst::Assignment<'arena>, ctx: &mut Ctx) {
+    fn walk_in_assignment(&self, node: &'ast Assignment<'arena>, ctx: &mut Ctx) {
+        // `$f = function () {...}` / `$f = fn () => ...` -> name the closure `$f`.
         if matches!(node.rhs, Expression::Closure(_) | Expression::ArrowFunction(_)) {
             if let Some(v) = var_name(node.lhs) {
                 ctx.pending_closure_name = Some(v.trim_start_matches('$').to_string());
+            }
+        }
+        // `$var = new Class(...)` -> remember `$var`'s type for the rest of the
+        // scope, so a later `$var->method()` resolves to `Class::method`. This is
+        // the dominant "instantiate then use" idiom in Dolibarr / procedural PHP.
+        if matches!(node.operator, AssignmentOperator::Assign(_)) {
+            if let (Some(var), Expression::Instantiation(inst)) = (var_name(node.lhs), node.rhs) {
+                if let Some(class) = new_class(inst.class, ctx) {
+                    ctx.bind(var, class);
+                }
             }
         }
     }
@@ -711,15 +734,12 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Ctx> for Ext {
     // constructed (DTOs, controllers, models) is not read as dead. `new $var()` /
     // `new (expr)()` is dynamic and skipped; `new self/static()` targets the class.
     fn walk_in_instantiation(&self, node: &'ast Instantiation<'arena>, ctx: &mut Ctx) {
-        let class = match node.class {
-            Expression::Identifier(id) => Some(ident_name(id)),
-            Expression::Self_(_) | Expression::Static(_) => ctx.class_stack.last().cloned(),
-            _ => None,
-        };
-        if let Some(class) = class {
-            let src = ctx.cur();
-            ctx.edges.push(RawEdge::named(src, "instantiates", class));
-        }
+        let Some(class) = new_class(node.class, ctx) else { return };
+        let src = ctx.cur();
+        ctx.edges.push(RawEdge::named(src.clone(), "instantiates", class.clone()));
+        // `new X()` also invokes `X::__construct`, which no one calls by name --
+        // link it so a constructor is wired whenever the class is instantiated.
+        ctx.edges.push(RawEdge::call(src, "__construct".to_string(), true, Some(class)));
     }
 
     // `require` / `include` (and their `_once` forms) as file-dependency edges.
@@ -996,6 +1016,31 @@ mod tests {
             edges.iter().filter(|e| e.relation == "uses-const").filter_map(|e| e.name.as_deref()).collect();
         assert!(used.contains(&"Route"), "Route::IMPORT / Route::class -> uses-const Route");
         assert!(used.contains(&"Status"), "Status::Open -> uses-const Status");
+    }
+
+    #[test]
+    fn local_new_var_types_the_receiver_and_links_the_constructor() {
+        // The dominant procedural idiom: `$x = new Class(); $x->method()`. The
+        // local var is typed from the `new`, and `new` itself wires `__construct`.
+        let code = r"<?php
+            class Facture {
+                public function __construct($db) {}
+                public function fetch($id) {}
+                public function getNomUrl() {}
+            }
+            function show($db) {
+                $f = new Facture($db);
+                $f->fetch(3);
+                echo $f->getNomUrl();
+            }
+        ";
+        let (_, edges) = extract("a.php", code);
+        assert!(has_call(&edges, "__construct", Some("Facture")), "new Facture() -> wires the constructor");
+        assert!(has_call(&edges, "fetch", Some("Facture")), "$f->fetch() via local new-var type");
+        assert!(has_call(&edges, "getNomUrl", Some("Facture")), "$f->getNomUrl() via local new-var type");
+        // `new self()` inside a method types against the current class.
+        let (_, e2) = extract("b.php", "<?php\nclass P {\n  public static function make() { $x = new self(); return $x->go(); }\n  public function go() {}\n}");
+        assert!(has_call(&e2, "go", Some("P")), "new self() -> current class");
     }
 
     #[test]
